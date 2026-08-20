@@ -44,7 +44,7 @@ const POLICY_DIR = "./policies";
 const POLICIES = {
   walk: `${POLICY_DIR}/BEST_alpha_walking.onnx`,
   sitstand: `${POLICY_DIR}/BEST_alpha_sitstand.onnx`,
-  roulade: `${POLICY_DIR}/roulade.onnx`,
+  roll: `${POLICY_DIR}/roulade.onnx`,
 };
 
 // From the ONNX metadata (identical for all alpha policies) and the STAND
@@ -165,10 +165,10 @@ const rigPromise = (async () => {
   return buildRig(k, { materialForMesh: materialHookFor(VARIANTS[currentVariant]) });
 })();
 const sessionOpts = { executionProviders: ["wasm"] };
-[sessions.walk, sessions.sitstand, sessions.roulade] = await Promise.all([
+[sessions.walk, sessions.sitstand, sessions.roll] = await Promise.all([
   ort.InferenceSession.create(signed(POLICIES.walk), sessionOpts),
   ort.InferenceSession.create(signed(POLICIES.sitstand), sessionOpts),
-  ort.InferenceSession.create(signed(POLICIES.roulade), sessionOpts),
+  ort.InferenceSession.create(signed(POLICIES.roll), sessionOpts),
 ]);
 
 setLoading("Compiling physics\u2026");
@@ -194,26 +194,23 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 const padCmd = new Float32Array(3);
 let padActive = false;
 const padPrev = { x: false, dpadDown: false, dpadUp: false, rt: 0 };
-// Declared before the control loop starts: buildObs checks it to decide
-// between the auto-run default and manual key control.
+// Declared before the control loop starts: buildObs reads it via
+// effectiveCmd on the very first control step.
 const held = new Set();
 
-let mode = "walk"; // "walk" | "sitstand" | "roulade"
+let mode = "walk"; // "walk" | "sitstand" | "roll"
 let sitFlag = 0;
 
-// The twist the policy actually receives: live gamepad sticks win, held
-// keys next, and idle input in walk mode means auto-run forward. Shared by
-// buildObs and the HUD mini-sticks so they can never disagree.
-const AUTO_CMD = new Float32Array([VEL_FWD, 0, 0]);
+// The twist the policy actually receives: live gamepad sticks win over the
+// held keys. No input means zero command - the duck stands in place.
+// Shared by buildObs and the HUD mini-sticks so they can never disagree.
 function effectiveCmd() {
-  if (padActive) return padCmd;
-  if (mode === "walk" && !held.size) return AUTO_CMD;
-  return velCmd;
+  return padActive ? padCmd : velCmd;
 }
-// One-shot roulade tracking: trigger time + whether the trunk actually
-// tipped over yet. Set by triggerRoulade, cleared when we hand back to walk.
-let rouladeRun = null;
-let rouladeSource = "kb"; // which hint lights up: keyboard Space or pad X
+// One-shot roll tracking: trigger time + whether the trunk actually
+// tipped over yet. Set by triggerRoll, cleared when we hand back to walk.
+let rollRun = null;
+let rollSource = "kb"; // which hint lights up: keyboard Space or pad X
 
 function resetSim() {
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
@@ -242,11 +239,10 @@ function buildObs() {
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = qpos[qposAdr[j]] - DEFAULT_POSE[j];
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = qvel[dofAdr[j]];
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = lastAction[j];
-  // command: walking/roulade use the twist; sitstand uses cmd[0] as the
-  // posture flag. "Run" means run: with no keys held the walking policy
-  // gets a forward velocity by default, keys override it.
+  // command: walking/roll use the twist; sitstand uses cmd[0] as the
+  // posture flag.
   cmd.fill(0, 0, 3);
-  if (mode === "walk" || mode === "roulade") {
+  if (mode === "walk" || mode === "roll") {
     const c = effectiveCmd();
     cmd[0] = c[0]; cmd[1] = c[1]; cmd[2] = c[2];
   } else {
@@ -272,13 +268,13 @@ async function controlStep() {
   // Fall detection: walk/sitstand have no get-up skill, so auto-reset when
   // down for good. Height alone would false-positive on a deep sit, so
   // "fallen" = trunk tilted past ~60 deg (projected gravity z above -0.5)
-  // or sunk below the floor, sustained for over a second. The roulade rolls
+  // or sunk below the floor, sustained for over a second. The roll tumbles
   // the trunk on purpose and recovers on its own, so it gets a much longer
   // grace window before we call it stuck.
   const z = data.qpos[2];
   const now = performance.now();
   const tipped = obs[5] > -0.5; // projected gravity z, from the last obs
-  const graceMs = mode === "roulade" ? 5000 : 1000;
+  const graceMs = mode === "roll" ? 5000 : 1000;
   if (tipped || z < 0.02) {
     fallenSince ??= now;
     if (now - fallenSince > graceMs) { resetSim(); fallenSince = null; }
@@ -286,19 +282,19 @@ async function controlStep() {
     fallenSince = null;
   }
 
-  // One-shot roulade, step-counted like the robot runtime (a single roll is
+  // One-shot roll, step-counted like the robot runtime (a single roll is
   // ~1 s = 50 control steps there): hand back to walking once the trunk has
   // tipped over and is upright again, or after a hard 2 s window if the roll
   // never initiated. Counting steps instead of wall time keeps the logic
   // correct when the sim is fast-forwarded or the tab is throttled.
-  if (mode === "roulade" && rouladeRun) {
-    rouladeRun.steps++;
-    if (obs[5] > -0.3) rouladeRun.tipped = true;
+  if (mode === "roll" && rollRun) {
+    rollRun.steps++;
+    if (obs[5] > -0.3) rollRun.tipped = true;
     const upright = obs[5] < -0.85;
-    const done = rouladeRun.tipped && upright && rouladeRun.steps >= 40;
-    const expired = rouladeRun.steps >= 150; // 3 s, roll should long be over
+    const done = rollRun.tipped && upright && rollRun.steps >= 40;
+    const expired = rollRun.steps >= 150; // 3 s, roll should long be over
     if (done || expired) {
-      rouladeRun = null;
+      rollRun = null;
       mode = "walk";
       lastAction.fill(0);
       // Timed out mid-roll: don't hand a tipped duck to the walking policy
@@ -480,11 +476,13 @@ function syncJaw() {
 const el = (id) => document.getElementById(id);
 const dotMove = el("dot-move"), dotTurn = el("dot-turn");
 const boxMove = dotMove.parentElement, boxTurn = dotTurn.parentElement;
-const hints = {
-  move: el("hint-move"), turn: el("hint-turn"), strafe: el("hint-strafe"),
-  roulade: el("hint-roulade"), reset: el("hint-reset"),
-  padX: el("hint-pad-x"), padSit: el("hint-pad-sit"),
-  padRun: el("hint-pad-run"), padRt: el("hint-pad-rt"),
+const keyEls = {
+  fwd: el("key-fwd"), back: el("key-back"),
+  turnl: el("key-turnl"), turnr: el("key-turnr"),
+  left: el("key-left"), right: el("key-right"),
+  roll: el("key-roll"), reset: el("key-reset"),
+  padX: el("key-pad-x"), padSit: el("key-pad-sit"),
+  padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
 };
 const STICK_R = 15; // px, max dot travel inside the 46px stick circle
 let resetFlashAt = -Infinity;
@@ -496,8 +494,8 @@ function renderStats() {
   statsEl.textContent =
     `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s`;
 
-  // Mini sticks: the dot mirrors the effective twist (auto-run shows as a
-  // resting dot at the top), lit yellow while the user is actually driving.
+  // Mini sticks: the dot mirrors the effective twist, lit yellow while the
+  // user is actually driving.
   const manual = padActive || held.size > 0;
   const yN = vx >= 0 ? vx / VEL_FWD : vx / -VEL_BACK;
   dotMove.style.transform = `translate(${(-vy / VEL_LAT) * STICK_R}px, ${-yN * STICK_R}px)`;
@@ -505,18 +503,18 @@ function renderStats() {
   boxMove.classList.toggle("live", manual && (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01));
   boxTurn.classList.toggle("live", manual && Math.abs(wz) > 0.01);
 
-  // Hint highlighting: each hint lights only for its own input device, so
-  // driving with the gamepad doesn't light up the keyboard row.
+  // Keycap highlighting: each individual key lights only while its own
+  // action is active, and only for its own input device.
   const sitting = mode === "sitstand" && sitFlag === 1;
-  hints.move.classList.toggle("lit", held.has("fwd") || held.has("back"));
-  hints.strafe.classList.toggle("lit", held.has("left") || held.has("right"));
-  hints.turn.classList.toggle("lit", held.has("turnl") || held.has("turnr"));
-  hints.roulade.classList.toggle("lit", mode === "roulade" && rouladeSource === "kb");
-  hints.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
-  hints.padX.classList.toggle("lit", mode === "roulade" && rouladeSource === "pad");
-  hints.padSit.classList.toggle("lit", sitting);
-  hints.padRun.classList.toggle("lit", padPrev.dpadUp);
-  hints.padRt.classList.toggle("lit", padJaw > 0.3);
+  for (const k of ["fwd", "back", "turnl", "turnr", "left", "right"]) {
+    keyEls[k].classList.toggle("lit", held.has(k));
+  }
+  keyEls.roll.classList.toggle("lit", mode === "roll" && rollSource === "kb");
+  keyEls.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
+  keyEls.padX.classList.toggle("lit", mode === "roll" && rollSource === "pad");
+  keyEls.padSit.classList.toggle("lit", sitting);
+  keyEls.padRun.classList.toggle("lit", padPrev.dpadUp);
+  keyEls.padRt.classList.toggle("lit", padJaw > 0.3);
 }
 
 // Real implementation assigned in the gamepad section below; the render
@@ -553,7 +551,7 @@ const KEYMAP = {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyR") { resetSim(); resetFlashAt = performance.now(); return; }
-  if (e.code === "Space") { e.preventDefault(); triggerRoulade(); return; }
+  if (e.code === "Space") { e.preventDefault(); triggerRoll(); return; }
   const act = KEYMAP[e.code];
   if (!act) return;
   e.preventDefault();
@@ -571,7 +569,7 @@ window.addEventListener("blur", () => { held.clear(); refreshVelCmd(); });
 // ── Gamepad: same mapping as the robot runtime (microduck_runtime) ──────
 // Sticks: L vertical = vx (asymmetric fwd/back), L horizontal = strafe,
 // R horizontal = turn, all EMA-smoothed like the runtime's cmd_alpha.
-// X = roulade, DpadDown = sit/stand, DpadUp = back to run, RT = mouth.
+// X = roll, DpadDown = sit/stand, DpadUp = back to run, RT = mouth.
 const PAD_DEADZONE = 0.15;
 const PAD_ALPHA = 0.12;
 const dz = (v) => (Math.abs(v) < PAD_DEADZONE ? 0 : v);
@@ -592,7 +590,7 @@ pollPad = function pollGamepad() {
   ];
   for (let i = 0; i < 3; i++) padCmd[i] += PAD_ALPHA * (target[i] - padCmd[i]);
   // Sticks grab command authority on first input, release when back at rest
-  // (then keyboard / auto-run take over again).
+  // (then the keyboard takes over again).
   const stickInput = lx !== 0 || ly !== 0 || rx !== 0;
   if (stickInput) padActive = true;
   else if (padActive && Math.abs(padCmd[0]) + Math.abs(padCmd[1]) + Math.abs(padCmd[2]) < 0.01) {
@@ -602,7 +600,7 @@ pollPad = function pollGamepad() {
 
   // Standard mapping indices: X=2, DpadDown=13, RT=7 (analog value).
   const x = !!gp.buttons[2]?.pressed;
-  if (x && !padPrev.x) triggerRoulade("pad");
+  if (x && !padPrev.x) triggerRoll("pad");
   padPrev.x = x;
 
   const dpadDown = !!gp.buttons[13]?.pressed;
@@ -612,10 +610,10 @@ pollPad = function pollGamepad() {
   }
   padPrev.dpadDown = dpadDown;
 
-  // DpadUp: straight back to running. Ignored mid-roulade (it hands back
+  // DpadUp: straight back to running. Ignored mid-roll (it hands back
   // to walk on its own, and switching on a tipped duck would floor it).
   const dpadUp = !!gp.buttons[12]?.pressed;
-  if (dpadUp && !padPrev.dpadUp && mode !== "walk" && mode !== "roulade") setMode("walk");
+  if (dpadUp && !padPrev.dpadUp && mode !== "walk" && mode !== "roll") setMode("walk");
   padPrev.dpadUp = dpadUp;
 
   // Triggers drive the mouth like the runtime (max of both), and the right
@@ -633,7 +631,7 @@ const modeLabel = document.getElementById("mode-label");
 
 function setMode(next) {
   quack();
-  rouladeRun = null;
+  rollRun = null;
   if (next !== "sit") {
     // Leaving a sit: let the sitstand policy stand the duck back up first.
     if (mode === "sitstand" && sitFlag === 1) {
@@ -658,17 +656,17 @@ function setMode(next) {
   syncButtons();
 }
 
-// One roulade, then straight back to running (Space key or the button).
+// One roll, then straight back to running (Space key or the button).
 // lastAction is deliberately NOT zeroed here: the robot runtime keeps one
 // continuous action history across policy switches, and the roll initiates
 // more reliably mid-gait with the true last actions in the obs.
-function triggerRoulade(source = "kb") {
-  if (mode === "roulade") return;
-  rouladeSource = source;
+function triggerRoll(source = "kb") {
+  if (mode === "roll") return;
+  rollSource = source;
   quack();
-  mode = "roulade";
+  mode = "roll";
   sitFlag = 0;
-  rouladeRun = { steps: 0, tipped: false };
+  rollRun = { steps: 0, tipped: false };
   syncButtons();
 }
 // Slot-machine roll: the old text slides up and out while the new one
@@ -690,7 +688,7 @@ function setModeLabel(text) {
 
 function syncButtons() {
   const sitting = mode === "sitstand" && sitFlag === 1;
-  setModeLabel(mode === "roulade" ? "Roll" : sitting ? "Sit" : "Run");
+  setModeLabel(mode === "roll" ? "Roll" : sitting ? "Sit" : "Run");
 }
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────

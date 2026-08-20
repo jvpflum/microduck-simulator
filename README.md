@@ -19,7 +19,7 @@ runs the policy network at 50 Hz. No server, no backend.
 |--------|-----------|--------------|
 | Run | `BEST_alpha_walking.onnx` | Velocity-tracking locomotion (arrows / WASD to steer) |
 | Sit | `BEST_alpha_sitstand.onnx` | Sits down on its hull, stands back up |
-| Roulade | `roulade.onnx` | Rolls over and recovers |
+| Roll | `roulade.onnx` | Rolls over and recovers |
 
 Policies and MJCF model from
 [apirrone/microduck_runtime](https://github.com/apirrone/microduck_runtime)

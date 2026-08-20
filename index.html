@@ -174,8 +174,7 @@
         text-align: center;
         transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
       }
-      #hud .keys .hint.lit { color: var(--yellow); }
-      #hud .keys .hint.lit .key {
+      #hud .keys .key.lit {
         background: var(--yellow);
         border-color: var(--yellow);
         color: var(--ink);
@@ -275,17 +274,17 @@
             <span>turn</span>
           </div>
         </div>
-        <span class="hint" id="hint-move"><span class="key">&uarr;</span><span class="key">&darr;</span> move</span> &nbsp;
-        <span class="hint" id="hint-turn"><span class="key">&larr;</span><span class="key">&rarr;</span> turn</span> &nbsp;
-        <span class="hint" id="hint-strafe"><span class="key">A</span><span class="key">E</span> strafe</span><br />
-        <span class="hint" id="hint-roulade"><span class="key">Space</span> roll</span> &nbsp;
-        <span class="hint" id="hint-reset"><span class="key">R</span> reset</span> &nbsp;
+        <span class="hint"><span class="key" id="key-fwd">&uarr;</span><span class="key" id="key-back">&darr;</span> move</span> &nbsp;
+        <span class="hint"><span class="key" id="key-turnl">&larr;</span><span class="key" id="key-turnr">&rarr;</span> turn</span> &nbsp;
+        <span class="hint"><span class="key" id="key-left">A</span><span class="key" id="key-right">E</span> strafe</span><br />
+        <span class="hint"><span class="key" id="key-roll">Space</span> roll</span> &nbsp;
+        <span class="hint"><span class="key" id="key-reset">R</span> reset</span> &nbsp;
         drag to orbit &middot; scroll to zoom<br />
         <span id="pad-hint">gamepad:
-          <span class="hint" id="hint-pad-x"><span class="key">X</span> roll</span> &nbsp;
-          <span class="hint" id="hint-pad-sit"><span class="key">&dArr;</span> sit</span> &nbsp;
-          <span class="hint" id="hint-pad-run"><span class="key">&uArr;</span> run</span> &nbsp;
-          <span class="hint" id="hint-pad-rt"><span class="key">RT</span> quack</span>
+          <span class="hint"><span class="key" id="key-pad-x">X</span> roll</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-sit">&dArr;</span> sit</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-run">&uArr;</span> run</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-rt">RT</span> quack</span>
         </span>
       </div>
     </div>
@@ -303,7 +302,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "3"; // bump on rl.js changes to defeat heuristic caching
+      const V = "5"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);
