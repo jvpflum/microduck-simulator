@@ -356,15 +356,20 @@ resize();
 // The rig's root already applies the MJCF Z-up -> three Y-up fix, so the
 // trunk group can take the freejoint pose in raw MJCF coordinates.
 const _target = new THREE.Vector3();
+const _follow = new THREE.Vector3();
 function syncRig() {
   const qpos = data.qpos;
   trunkGroup.position.set(qpos[0], qpos[1], qpos[2]);
   trunkGroup.quaternion.set(qpos[4], qpos[5], qpos[6], qpos[3]);
   for (let j = 0; j < NUM_JOINTS; j++) setJoint(rig, JOINT_NAMES[j], qpos[qposAdr[j]]);
-  // Camera target eases toward the trunk so the duck stays framed while
-  // it walks away.
+  // Follow cam: ease the orbit target toward the trunk and translate the
+  // camera by the same delta, so the camera-to-duck distance and viewing
+  // angle stay constant while the duck walks. Mouse orbit/zoom still work:
+  // they only change the (preserved) camera-target offset.
   _target.set(qpos[0], qpos[2], -qpos[1]);
-  controls.target.lerp(_target, 0.06);
+  _follow.copy(_target).sub(controls.target).multiplyScalar(0.06);
+  controls.target.add(_follow);
+  camera.position.add(_follow);
 }
 
 // Quack: a quick jaw flap on every mode/colour change. The jaw isn't a
