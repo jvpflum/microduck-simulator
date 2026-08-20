@@ -149,6 +149,9 @@ async function playBios() {
   ready.textContent = "READY.";
   postEl.appendChild(ready);
   await biosSleep(500);
+  // Cue the world draw-in + duck dissolve right as the overlay fades.
+  // (Only ever reached after bootDone, so the scene exists by now.)
+  startEntrance();
   loadingEl.classList.add("off");
   await biosSleep(500);
   loadingEl.style.display = "none";
@@ -599,6 +602,8 @@ function makeInfiniteGrid() {
       uSectionColor: { value: new THREE.Color(0xffb366) },
       uFadeDist: { value: 3.0 },
       uFocus: { value: new THREE.Vector3() },
+      // Entrance draw-in progress; 1 = steady state (branch skipped).
+      uReveal: { value: 1.0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
@@ -610,7 +615,7 @@ function makeInfiniteGrid() {
     `,
     fragmentShader: /* glsl */ `
       varying vec3 vWorld;
-      uniform float uCell, uSection, uFadeDist;
+      uniform float uCell, uSection, uFadeDist, uReveal;
       uniform vec3 uCellColor, uSectionColor, uFocus;
       // Tron-style line: a thicker antialiased core plus a faint, much
       // wider halo added on top (squared falloff keeps it a whisper of a
@@ -630,6 +635,16 @@ function makeInfiniteGrid() {
         float fade = pow(clamp(1.0 - d / uFadeDist, 0.0, 1.0), 1.6);
         vec3 col = mix(uCellColor, uSectionColor, clamp(section, 0.0, 1.0));
         float alpha = min(max(section * 0.6, cell * 0.4) * fade, 1.0);
+        // Entrance draw-in: strokes appear radially from the arena center,
+        // each section tile staggered by a hash so lines pop one after
+        // another. Exactly the steady-state shader once uReveal hits 1.
+        if (uReveal < 1.0) {
+          float rd = length(vWorld.xz) / 6.0;
+          vec2 tile = floor(vWorld.xz / uSection);
+          float jit = fract(sin(dot(tile, vec2(127.1, 311.7))) * 43758.5453);
+          float at = rd * 0.78 + jit * 0.24;
+          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06);
+        }
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
       }
@@ -662,6 +677,8 @@ function makeWallGridMaterial(alongX) {
       uFocus: { value: new THREE.Vector3() },
       uWallH: { value: ARENA_WALL_H },
       uAlongX: { value: alongX ? 1.0 : 0.0 },
+      // Entrance draw-in progress; 1 = steady state (branch skipped).
+      uReveal: { value: 1.0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
@@ -673,7 +690,7 @@ function makeWallGridMaterial(alongX) {
     `,
     fragmentShader: /* glsl */ `
       varying vec3 vWorld;
-      uniform float uCell, uSection, uFadeDist, uWallH, uAlongX;
+      uniform float uCell, uSection, uFadeDist, uWallH, uAlongX, uReveal;
       uniform vec3 uCellColor, uSectionColor, uFocus;
       // Same Tron-style core + faint halo as the floor grid.
       float gridLine(vec2 p, float size) {
@@ -695,6 +712,15 @@ function makeWallGridMaterial(alongX) {
         float vert = 1.0 - clamp(vWorld.y / uWallH, 0.0, 1.0);
         vec3 col = mix(uCellColor, uSectionColor, clamp(section, 0.0, 1.0));
         float alpha = min(max(section * 0.9, cell * 0.6) * fade * (0.3 + 0.7 * vert), 1.0);
+        // Entrance draw-in: wall lines rise bottom-to-top with a per-tile
+        // stagger. Exactly the steady-state shader once uReveal hits 1.
+        if (uReveal < 1.0) {
+          float hN = clamp(vWorld.y / uWallH, 0.0, 1.0);
+          vec2 tile = floor(p / uSection);
+          float jit = fract(sin(dot(tile, vec2(127.1, 311.7))) * 43758.5453);
+          float at = hN * 0.76 + jit * 0.24;
+          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06);
+        }
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
       }
@@ -724,6 +750,103 @@ const wallMats = [];
 const rig = await rigPromise;
 scene.add(rig.placer);
 const trunkGroup = rig.bodies.get("trunk_base");
+
+// ── Sci-fi entrance: Tron grid draw-in + duck dissolve-in ───────────────
+// Plays once per page load, right as the BIOS overlay fades (playBios
+// calls startEntrance). Gameplay stays live throughout. The duck dissolve
+// swaps each rig mesh onto a TEMPORARY clone of its material (the shared
+// matFor cache and ghost cloning stay untouched) and restores the
+// originals when the effect completes, so variants/ghosts behave exactly
+// as before once the sequence is over.
+const dissolveP = { value: 1.0 }; // shared across all dissolve clones
+let dissolveSaved = null; // Array<[mesh, originalMaterial]> while active
+function applyDissolve() {
+  if (dissolveSaved) return;
+  dissolveSaved = [];
+  rig.placer.traverse((o) => {
+    if (!o.isMesh) return;
+    const orig = o.material;
+    const m = orig.clone();
+    m.onBeforeCompile = (shader) => {
+      shader.uniforms.uDissolveP = dissolveP;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vDsvW;")
+        .replace(
+          "#include <worldpos_vertex>",
+          "#include <worldpos_vertex>\nvDsvW = (modelMatrix * vec4(transformed, 1.0)).xyz;",
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", /* glsl */ `#include <common>
+varying vec3 vDsvW;
+uniform float uDissolveP;
+float dsvHash(vec3 q) { return fract(sin(dot(q, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float dsvNoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(dsvHash(i), dsvHash(i + vec3(1, 0, 0)), f.x),
+        mix(dsvHash(i + vec3(0, 1, 0)), dsvHash(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(dsvHash(i + vec3(0, 0, 1)), dsvHash(i + vec3(1, 0, 1)), f.x),
+        mix(dsvHash(i + vec3(0, 1, 1)), dsvHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}`)
+        .replace("#include <clipping_planes_fragment>", /* glsl */ `#include <clipping_planes_fragment>
+float dsvEdge = 0.0;
+if (uDissolveP < 1.0) {
+  float dsvN = dsvNoise(vDsvW * 26.0);
+  float dsvThr = uDissolveP * 1.15;
+  if (dsvN > dsvThr) discard;
+  dsvEdge = 1.0 - smoothstep(0.015, 0.1, dsvThr - dsvN);
+}`)
+        .replace("#include <dithering_fragment>", /* glsl */ `#include <dithering_fragment>
+gl_FragColor.rgb += dsvEdge * vec3(1.0, 0.824, 0.247);`);
+    };
+    m.needsUpdate = true;
+    dissolveSaved.push([o, orig]);
+    o.material = m;
+  });
+}
+function restoreDissolve() {
+  if (!dissolveSaved) return;
+  for (const [mesh, orig] of dissolveSaved) {
+    mesh.material.dispose();
+    mesh.material = orig;
+  }
+  dissolveSaved = null;
+}
+
+const ENTRANCE_GRID_S = 1.5; // floor draw-in duration
+const ENTRANCE_WALL_DELAY_S = 0.4; // walls start after the floor
+const ENTRANCE_DISSOLVE_START_S = 0.9; // ~60% through the floor draw
+const ENTRANCE_DISSOLVE_S = 1.0;
+const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
+const easeOutCubic = (x) => 1 - Math.pow(1 - clamp01(x), 3);
+let entranceT0 = null; // wall-clock start while the sequence is playing
+let entranceDone = false; // latches: once per page load
+function startEntrance() {
+  if (entranceT0 !== null || entranceDone) return;
+  entranceT0 = performance.now();
+  grid.material.uniforms.uReveal.value = 0;
+  for (const m of wallMats) m.uniforms.uReveal.value = 0;
+  dissolveP.value = 0; // duck fully dissolved until its cue
+  applyDissolve();
+}
+function updateEntrance() {
+  if (entranceT0 === null) return;
+  const t = (performance.now() - entranceT0) / 1000;
+  grid.material.uniforms.uReveal.value = easeOutCubic(t / ENTRANCE_GRID_S);
+  const wallR = easeOutCubic((t - ENTRANCE_WALL_DELAY_S) / ENTRANCE_GRID_S);
+  for (const m of wallMats) m.uniforms.uReveal.value = wallR;
+  const dp = clamp01((t - ENTRANCE_DISSOLVE_START_S) / ENTRANCE_DISSOLVE_S);
+  dissolveP.value = dp;
+  if (t >= ENTRANCE_WALL_DELAY_S + ENTRANCE_GRID_S && dp >= 1) {
+    // Park everything in exact steady state and drop the temp materials.
+    entranceT0 = null;
+    entranceDone = true;
+    grid.material.uniforms.uReveal.value = 1;
+    for (const m of wallMats) m.uniforms.uReveal.value = 1;
+    restoreDissolve();
+  }
+}
 
 // Soccer-ball look computed per pixel on the sphere itself, so there is
 // no pole or seam special case by design. The truncated icosahedron is
@@ -1095,6 +1218,7 @@ function loop() {
   ghosts?.update();
   controls.update();
   updateChaseCam();
+  updateEntrance();
   renderStats();
   renderer.render(scene, camera);
 }
@@ -1414,8 +1538,24 @@ window.rl = {
   step: async (n = 1) => { for (let i = 0; i < n; i++) await controlStep(); },
   render: () => { syncRig(); renderer.render(scene, camera); },
   // One full render-loop iteration, for tests driving frames manually.
-  frame: () => { syncRig(); syncJaw(); controls.update(); updateChaseCam(); renderStats(); renderer.render(scene, camera); },
+  frame: () => { syncRig(); syncJaw(); controls.update(); updateChaseCam(); updateEntrance(); renderStats(); renderer.render(scene, camera); },
   get ghosts() { return ghosts; },
+  // Deterministic entrance controls for screenshots/tests: setting values
+  // detaches the time-based driver; setDissolve(1) also restores the
+  // original materials (same cleanup as the real sequence).
+  entrance: {
+    start: startEntrance,
+    setReveal: (floor, wall = floor) => {
+      entranceT0 = null;
+      grid.material.uniforms.uReveal.value = floor;
+      for (const m of wallMats) m.uniforms.uReveal.value = wall;
+    },
+    setDissolve: (p) => {
+      entranceT0 = null;
+      if (p >= 1) { dissolveP.value = 1; restoreDissolve(); }
+      else { applyDissolve(); dissolveP.value = p; }
+    },
+  },
 };
 
 // ── Multiplayer ghosts (WebRTC, serverless signaling) ───────────────────
