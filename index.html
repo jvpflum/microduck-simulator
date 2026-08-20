@@ -299,6 +299,22 @@
         font-variant-numeric: tabular-nums;
         text-shadow: 0 0 6px rgba(255, 255, 255, 0.18);
       }
+      /* BIOS-style line while the roller variant streams in on first switch */
+      #osd-load[hidden] { display: none; }
+      #osd-load {
+        font-size: 0.68rem;
+        letter-spacing: 0.14em;
+        color: var(--yellow, #ffd23f);
+        text-shadow: 0 0 8px rgba(255, 210, 63, 0.4);
+      }
+      .osd-load-cursor {
+        display: inline-block;
+        margin-left: 0.15em;
+        animation: rec-blink 0.8s steps(1) infinite;
+      }
+      /* Roller mode: legs-only actions (kicks, sit) are inert - fade their
+         hints; rl.js toggles body.rollers on every variant switch. */
+      body.rollers .legs-only { opacity: 0.25; }
       @media (max-width: 700px) {
         #hud { flex-direction: column; align-items: flex-start; }
         #hud .keys { display: none; }
@@ -588,6 +604,7 @@
       </div>
       <div class="mode" id="mode-label"><span class="mode-text">Run</span></div>
       <div id="stats"></div>
+      <div id="osd-load" hidden>LOADING ROLLERS<span class="osd-load-cursor">&#9608;</span></div>
     </div>
     <div id="hud" hidden>
       <div class="stack">
@@ -608,20 +625,21 @@
         </div>
         <span class="hint"><span class="key" id="key-fwd">&uarr;</span><span class="key" id="key-back">&darr;</span> move</span> &nbsp;
         <span class="hint"><span class="key" id="key-turnl">&larr;</span><span class="key" id="key-turnr">&rarr;</span> turn</span><br />
-        <span class="hint"><span class="key" id="key-roll">R</span> roll</span> &nbsp;
-        <span class="hint"><span class="key" id="key-kickl">A</span><span class="key" id="key-kickr">E</span> kick</span> &nbsp;
+        <span class="hint"><span class="key" id="key-roll">R</span> <span id="key-roll-label">roll</span></span> &nbsp;
+        <span class="hint legs-only"><span class="key" id="key-kickl">A</span><span class="key" id="key-kickr">E</span> kick</span> &nbsp;
         <span class="hint"><span class="key" id="key-ball">B</span> ball</span> &nbsp;
         <span class="hint"><span class="key" id="key-cam">C</span> camera</span> &nbsp;
+        <span class="hint"><span class="key" id="key-loco">M</span> rollers</span> &nbsp;
         <span class="hint"><span class="key" id="key-reset">Space</span> reset</span> &nbsp;
         drag to orbit &middot; scroll to zoom<br />
         <span id="pad-hint">gamepad:
-          <span class="hint"><span class="key" id="key-pad-x">X</span> roll</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-x">X</span> <span id="key-pad-x-label">roll</span></span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-y">Y</span> ball</span> &nbsp;
-          <span class="hint"><span class="key" id="key-pad-rb">RB</span><span class="key" id="key-pad-lb">LB</span> kick</span> &nbsp;
+          <span class="hint legs-only"><span class="key" id="key-pad-rb">RB</span><span class="key" id="key-pad-lb">LB</span> kick</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-rs">RS</span> camera</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-r3">R3</span> chase</span> &nbsp;
-          <span class="hint"><span class="key" id="key-pad-sit">&dArr;</span> sit</span> &nbsp;
-          <span class="hint"><span class="key" id="key-pad-run">&uArr;</span> run</span> &nbsp;
+          <span class="hint legs-only"><span class="key" id="key-pad-sit">&dArr;</span> sit</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-run">&uArr;</span> run &middot; hold: rollers</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-rt">RT</span> quack</span>
         </span>
       </div>
@@ -679,7 +697,7 @@
               <div class="t-hint">fresh start</div>
             </div>
           </div>
-          <div class="orbit-hint">drag to orbit &middot; scroll to zoom</div>
+          <div class="orbit-hint">drag to orbit &middot; scroll to zoom &middot; <b>M</b> swaps legs for roller skates</div>
         </section>
         <section class="extras">
           <div class="x-item">
@@ -746,7 +764,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "33"; // bump on rl.js changes to defeat heuristic caching
+      const V = "35"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);

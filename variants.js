@@ -168,6 +168,13 @@ export function meshMaterialsFor(v) {
     "ankle_right.stl": v.feet,
     "sole_left.stl": v.soles,
     "sole_right.stl": v.soles,
+    // Roller variant: the blade + ankle bracket take the shoe-upper slot,
+    // the rims take the sole accent, the tires are rubber-dark.
+    "ankle_l_v1.stl": v.feet,
+    "ankle_r_v1.stl": v.feet,
+    "roller_blade.stl": v.feet,
+    "rim.stl": v.soles,
+    "tire.stl": v.mechDark,
     // Dark mechanics. leg.stl is the printed shin that wraps the ankle
     // motor and its bearing ring: in gray they read as two gray motors,
     // so both go dark with the motor they hold.

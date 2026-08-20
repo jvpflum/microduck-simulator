@@ -13,6 +13,14 @@
 // command = [vx, vy, wz, head_pose(4), body_pose(6)]; for the sitstand
 // policy, command[0] is the posture flag (1 = sit, 0 = stand).
 // Action (14) = joint position targets relative to the default pose.
+//
+// Two locomotion variants share that exact interface (same 14 joints, same
+// default pose, same 61D obs - verified from the ONNX metadata):
+//   legs    - the walking robot (robot_allcollisions.xml), boot default
+//   rollers - the skating variant (robot_allcollisions_rollers.xml): the
+//             foot/sole assembly is replaced by a blade with 2 passive
+//             wheels per leg (extra unactuated hinges in qpos, zero in the
+//             keyframe). Lazy-loaded on the first M / DpadUp-hold switch.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -53,6 +61,11 @@ const POLICIES = {
   // the runtime swaps these in for a 0.5 s window, commands zeroed.
   kickL: `${POLICY_DIR}/ball_kick_left.onnx`,
   kickR: `${POLICY_DIR}/ball_kick_right.onnx`,
+  // Roller variant (lazy-loaded on first switch, never at boot):
+  // drive = velocity-tracking skating, crouch = one-shot crouch-glide
+  // driven by a phase encoding in the command slots (ground-pick style).
+  drive: `${POLICY_DIR}/BEST_roller.onnx`,
+  crouch: `${POLICY_DIR}/BEST_roller_crouch.onnx`,
 };
 
 // From the ONNX metadata (identical for all alpha policies) and the STAND
@@ -79,6 +92,15 @@ const CTRL_DT = TIMESTEP * DECIMATION; // 50 Hz
 // Velocity command limits, same as infer_policy.py's keyboard mapping.
 // No strafe input anymore: the lateral cmd slot stays zeroed for the obs.
 const VEL_FWD = 0.25, VEL_BACK = -0.2, VEL_ANG = 1.0;
+// Roller mode limits, from the runtime's roller branch: asymmetric vx
+// (0.6 push / 0.5 brake), no lateral, +-1.0 rad/s heading.
+const RVEL_FWD = 0.6, RVEL_BACK = -0.5, RVEL_ANG = 1.0;
+// Crouch-glide one-shot: command = [cos(2pi*phase), sin(2pi*phase), 0],
+// phase advancing at 1/CROUCH_PERIOD_S per second and the cycle exiting
+// at 0.7 - exactly the runtime's ground-pick slot the policy was trained
+// against (mjlab CROUCH_PERIOD = 5.0, cycle end 0.7 => 3.5 s gesture).
+const CROUCH_PERIOD_S = 5.0;
+const CROUCH_END_PHASE = 0.7;
 
 // Kickable ball: radius and parking spot (far away = hidden by default).
 const BALL_RADIUS = 0.05;
@@ -189,8 +211,11 @@ const traced = (label, p) => {
 // explicit <inertial>, and visual geoms have contype=0 conaffinity=0.
 // Stripping them means the MuJoCo VFS only needs the ~10 meshes referenced
 // by collision geoms.
-async function buildPhysicsXml() {
-  const src = await (await fetch(signed(`${MODEL_DIR}/robot_allcollisions.xml`))).text();
+// Works for both variants: the roller XML only differs by the ankle/wheel
+// subtree (4 extra passive hinges), which the keyframe builder below
+// handles by walking the joints in document order.
+async function buildPhysicsXml(xmlFile) {
+  const src = await (await fetch(signed(`${MODEL_DIR}/${xmlFile}`))).text();
   const doc = new DOMParser().parseFromString(src, "text/xml");
   for (const g of [...doc.querySelectorAll('geom[class="visual"]')]) g.remove();
   const usedMeshes = new Set(
@@ -243,15 +268,23 @@ async function buildPhysicsXml() {
     mass: "0.03", friction: "0.4 0.01 0.003", solref: "0.03 0.4", condim: "6",
   }));
   doc.querySelector("worldbody").appendChild(ballBody);
-  // STAND keyframe from mjlab's scene_walk.xml (STAND2 pose). The ball's
-  // 7 free-joint values MUST be appended or nq (21 + 7 = 28) won't match
-  // and the model won't compile; parked 50 m away = effectively absent.
+  // STAND keyframe from mjlab's scene_walk.xml (STAND2 pose; the roller
+  // scene_rollers.xml STAND uses the same trunk height and 14-joint pose).
+  // qpos must cover every joint in document order: the 14 actuated hinges
+  // take DEFAULT_POSE by name, anything else (the roller variant's passive
+  // wheels) starts at zero. The ball's 7 free-joint values MUST be
+  // appended or nq won't match and the model won't compile; parked 50 m
+  // away = effectively absent.
   const qposFree = "0 0 0.12 1 0 0 0";
+  const poseByName = new Map(JOINT_NAMES.map((n, i) => [n, DEFAULT_POSE[i]]));
+  const qposJoints = [...doc.querySelectorAll("body > joint")]
+    .map((j) => poseByName.get(j.getAttribute("name")) ?? 0)
+    .join(" ");
   const pose14 = Array.from(DEFAULT_POSE).join(" ");
   const kf = doc.createElement("keyframe");
   kf.appendChild(el("key", {
     name: "STAND",
-    qpos: `${qposFree} ${pose14} ${BALL_PARK_POS} 1 0 0 0`,
+    qpos: `${qposFree} ${qposJoints} ${BALL_PARK_POS} 1 0 0 0`,
     ctrl: pose14,
   }));
   root.appendChild(kf);
@@ -262,21 +295,29 @@ async function buildPhysicsXml() {
 // ── Boot physics + policy in parallel with the render rig ──────────────
 const [mujoco, { xml, meshFiles }, k] = await Promise.all([
   traced("MUJOCO WASM", loadMujoco()),
-  traced("PHYSICS MJCF", buildPhysicsXml()),
+  traced("PHYSICS MJCF", buildPhysicsXml("robot_allcollisions.xml")),
   traced("KINEMATICS", loadKinematics(`${MODEL_DIR}/kinematics.json`)),
 ]);
 
 const doneMeshes = bootLine("MESH ASSETS");
 const vfs = new mujoco.MjVFS();
-await Promise.all(
-  meshFiles.map(async (f) => {
-    // Same cache-busted URL as duck.js so the browser reuses the render
-    // meshes instead of downloading the collision subset a second time.
-    const buf = await (await fetch(signed(`${MODEL_DIR}/meshes/${f}?v=${MESH_VERSION}`), { cache: "force-cache" })).arrayBuffer();
-    // meshdir="assets" in the MJCF, so the compiler looks up "assets/<f>".
-    vfs.addBuffer(`assets/${f}`, new Uint8Array(buf));
-  }),
-);
+// One shared VFS for both variants; already-loaded files are skipped so
+// the roller lazy-load only fetches its 5 new meshes.
+const vfsFiles = new Set();
+async function addMeshesToVfs(files) {
+  await Promise.all(
+    files.map(async (f) => {
+      if (vfsFiles.has(f)) return;
+      vfsFiles.add(f);
+      // Same cache-busted URL as duck.js so the browser reuses the render
+      // meshes instead of downloading the collision subset a second time.
+      const buf = await (await fetch(signed(`${MODEL_DIR}/meshes/${f}?v=${MESH_VERSION}`), { cache: "force-cache" })).arrayBuffer();
+      // meshdir="assets" in the MJCF, so the compiler looks up "assets/<f>".
+      vfs.addBuffer(`assets/${f}`, new Uint8Array(buf));
+    }),
+  );
+}
+await addMeshesToVfs(meshFiles);
 doneMeshes(`${meshFiles.length} FILES`);
 
 const sessions = {};
@@ -300,20 +341,42 @@ const sessionOpts = { executionProviders: ["wasm"] };
 donePolicies("5/5");
 
 const doneCompile = bootLine("COMPILING PHYSICS");
-const model = mujoco.MjModel.from_xml_string(xml, vfs);
-const data = new mujoco.MjData(model);
+let model = mujoco.MjModel.from_xml_string(xml, vfs);
+let data = new mujoco.MjData(model);
 doneCompile("COMPILED");
 
-// Addresses resolved once. qpos/qvel/sensordata views are re-read at each
-// use: the WASM heap can grow and detach earlier TypedArray views.
+// Addresses resolved once per compiled variant. qpos/qvel/sensordata views
+// are re-read at each use: the WASM heap can grow and detach earlier
+// TypedArray views.
 // NOTE: unlike the Python bindings, these accessor fields are plain numbers.
-const qposAdr = JOINT_NAMES.map((n) => model.jnt(n).qposadr);
-const dofAdr = JOINT_NAMES.map((n) => model.jnt(n).dofadr);
-const gyroAdr = model.sensor("imu_ang_vel").adr;
-const trunkId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, "trunk_base");
-const standKeyId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY.value, "STAND");
-const ballQposAdr = model.jnt("ball_freejoint").qposadr;
-const ballDofAdr = model.jnt("ball_freejoint").dofadr;
+const JOINT_SET = new Set(JOINT_NAMES);
+function resolveAddrs(model, kin) {
+  return {
+    qposAdr: JOINT_NAMES.map((n) => model.jnt(n).qposadr),
+    dofAdr: JOINT_NAMES.map((n) => model.jnt(n).dofadr),
+    gyroAdr: model.sensor("imu_ang_vel").adr,
+    trunkId: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, "trunk_base"),
+    standKeyId: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY.value, "STAND"),
+    ballQposAdr: model.jnt("ball_freejoint").qposadr,
+    ballDofAdr: model.jnt("ball_freejoint").dofadr,
+    // Unactuated hinges (the roller variant's 4 passive wheels): not in
+    // the obs or ctrl, but synced to the render rig so the wheels spin.
+    extraJoints: kin.bodies
+      .filter((b) => b.joint && b.joint.type === "hinge" && !JOINT_SET.has(b.joint.name))
+      .map((b) => ({ name: b.joint.name, adr: model.jnt(b.joint.name).qposadr })),
+  };
+}
+// Active-variant address block, swapped wholesale by activateLoco.
+let { qposAdr, dofAdr, gyroAdr, trunkId, standKeyId, ballQposAdr, ballDofAdr, extraJoints } =
+  resolveAddrs(model, k);
+
+// Locomotion variants stay resident once built (model + data + rig +
+// addresses); legs is registered when its render rig resolves below.
+const locos = {};
+let loco = "legs"; // "legs" | "rollers"
+const velLims = () => (loco === "rollers"
+  ? [RVEL_FWD, RVEL_BACK, RVEL_ANG]
+  : [VEL_FWD, VEL_BACK, VEL_ANG]);
 
 let uiReady = false;
 const lastAction = new Float32Array(NUM_JOINTS);
@@ -324,15 +387,25 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
-const padPrev = { x: false, y: false, rb: false, lb: false, r3: false, dpadDown: false, dpadUp: false, rtArmed: true };
+const padPrev = {
+  x: false, y: false, rb: false, lb: false, r3: false, dpadDown: false,
+  dpadUp: false, dpadUpAt: 0, dpadUpFired: false, rtArmed: true,
+};
 // Right-stick camera state, read by renderStats before the gamepad
 // section below has evaluated (same reason as padCmd above).
 let padOrbitLive = false; // HUD: RS keycap lit while deflected
 // Declared before the control loop starts: buildObs reads it via
 // effectiveCmd on the very first control step.
 const held = new Set();
+// Robot input gate: twist commands, mode changes, rolls, kicks and ball
+// spawns all stay inert until the entrance sequence has fully played out
+// (updateEntrance flips this exactly when the choreography completes).
+let inputLocked = true;
 
-let mode = "walk"; // "walk" | "sitstand" | "roll" | "kickL" | "kickR"
+// "walk" is the main velocity-tracking mode in BOTH variants (legs walking
+// policy or roller drive policy - activeSession() picks); "crouch" is the
+// roller-only one-shot; the rest are legs-only.
+let mode = "walk"; // "walk" | "sitstand" | "roll" | "kickL" | "kickR" | "crouch"
 let sitFlag = 0;
 const isKick = () => mode === "kickL" || mode === "kickR";
 // Local-only kickable ball: false while parked at the keyframe spot
@@ -346,13 +419,18 @@ let ballActive = false;
 // hands back to walk on its own - steering would only knock the roll over.
 const ZERO_CMD = new Float32Array(3);
 function effectiveCmd() {
-  if (mode === "roll" || isKick() || postKickLock > 0) return ZERO_CMD;
+  if (inputLocked || mode === "roll" || mode === "crouch" || isKick() || postKickLock > 0)
+    return ZERO_CMD;
   return padActive ? padCmd : velCmd;
 }
 // One-shot roll tracking: trigger time + whether the trunk actually
 // tipped over yet. Set by triggerRoll, cleared when we hand back to walk.
 let rollRun = null;
 let rollSource = "kb"; // which hint lights up: keyboard Space or pad X
+// One-shot crouch-glide tracking (roller variant): phase 0 -> 0.7 over
+// 3.5 s, driven per control step. Shares rollSource for keycap lighting
+// (same R / pad-X trigger).
+let crouchRun = null;
 // One-shot kick tracking: the runtime swaps the kick policy in for a fixed
 // 0.5 s window (25 control steps at 50 Hz) with zeroed commands, then hands
 // straight back to walking. lastAction stays continuous across both swaps.
@@ -383,6 +461,7 @@ function resetSim() {
   clearModeTimers();
   rollRun = null;
   kickRun = null;
+  crouchRun = null;
   postKickLock = 0;
   mode = "walk";
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
@@ -402,6 +481,7 @@ resetSim();
 // nearby instead of always on the same spot. qvel is zeroed so a respawn
 // doesn't carry the old momentum.
 function spawnBall() {
+  if (inputLocked) return;
   const qpos = data.qpos, qvel = data.qvel;
   // Trunk yaw from the free-joint quaternion (qpos[3..6] = w x y z);
   // the duck walks toward its local +X.
@@ -444,11 +524,16 @@ function buildObs() {
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = qpos[qposAdr[j]] - DEFAULT_POSE[j];
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = qvel[dofAdr[j]];
   for (let j = 0; j < NUM_JOINTS; j++) obs[i++] = lastAction[j];
-  // command: walking/roll use the twist; sitstand uses cmd[0] as the
-  // posture flag.
+  // command: walking/drive use the twist; sitstand uses cmd[0] as the
+  // posture flag; the crouch-glide one-shot carries its phase encoding in
+  // the vel slots (ground-pick convention: [cos, sin, 0]).
   cmd.fill(0, 0, 3);
   if (mode === "sitstand") {
     cmd[0] = sitFlag;
+  } else if (mode === "crouch" && crouchRun) {
+    const a = 2 * Math.PI * crouchRun.phase;
+    cmd[0] = Math.cos(a);
+    cmd[1] = Math.sin(a);
   } else {
     // walk uses the live twist; roll and kick see all-zero commands
     // (via effectiveCmd), matching how they were trained.
@@ -459,13 +544,18 @@ function buildObs() {
   return obs;
 }
 
+// The ONNX session for the current mode: in the roller variant the main
+// velocity mode runs the drive (skating) policy instead of the walker.
+const activeSession = () =>
+  sessions[loco === "rollers" && mode === "walk" ? "drive" : mode];
+
 // ── Control loop (50 Hz, async because ONNX inference is async) ────────
 let ctrlHz = 0;
 let fallenSince = null;
 
 async function controlStep() {
   const feeds = { obs: new ort.Tensor("float32", buildObs(), [1, OBS_SIZE]) };
-  const out = await sessions[mode].run(feeds);
+  const out = await activeSession().run(feeds);
   const act = out.actions.data;
   lastAction.set(act);
   const ctrl = data.ctrl;
@@ -518,6 +608,19 @@ async function controlStep() {
       kickRun = null;
       mode = "walk";
       postKickLock = POST_KICK_LOCK_STEPS;
+      if (uiReady) syncButtons();
+    }
+  }
+
+  // Crouch-glide one-shot: advance the trained phase clock and hand back
+  // to the drive policy at the runtime's cycle end (0.7 x 5 s = 3.5 s:
+  // sink, glide low, stand back up). lastAction stays continuous, same as
+  // every other policy swap.
+  if (mode === "crouch" && crouchRun) {
+    crouchRun.phase += CTRL_DT / CROUCH_PERIOD_S;
+    if (crouchRun.phase >= CROUCH_END_PHASE) {
+      crouchRun = null;
+      mode = "walk";
       if (uiReady) syncButtons();
     }
   }
@@ -603,7 +706,9 @@ function makeInfiniteGrid() {
       uFadeDist: { value: 3.0 },
       uFocus: { value: new THREE.Vector3() },
       // Entrance draw-in progress; 1 = steady state (branch skipped).
-      uReveal: { value: 1.0 },
+      // Starts at 0: the world stays hidden behind the welcome modal and
+      // the BIOS readout until playBios cues startEntrance.
+      uReveal: { value: 0.0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
@@ -643,7 +748,9 @@ function makeInfiniteGrid() {
           vec2 tile = floor(vWorld.xz / uSection);
           float jit = fract(sin(dot(tile, vec2(127.1, 311.7))) * 43758.5453);
           float at = rd * 0.78 + jit * 0.24;
-          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06);
+          // step() clamps the smoothstep tail: center tiles have at < 0.12
+          // and would otherwise stay faintly visible at uReveal = 0.
+          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06) * step(1e-4, uReveal);
         }
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
@@ -678,7 +785,8 @@ function makeWallGridMaterial(alongX) {
       uWallH: { value: ARENA_WALL_H },
       uAlongX: { value: alongX ? 1.0 : 0.0 },
       // Entrance draw-in progress; 1 = steady state (branch skipped).
-      uReveal: { value: 1.0 },
+      // Starts at 0, same as the floor grid: hidden until startEntrance.
+      uReveal: { value: 0.0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
@@ -719,7 +827,8 @@ function makeWallGridMaterial(alongX) {
           vec2 tile = floor(p / uSection);
           float jit = fract(sin(dot(tile, vec2(127.1, 311.7))) * 43758.5453);
           float at = hN * 0.76 + jit * 0.24;
-          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06);
+          // Same tail clamp as the floor: fully dark until reveal begins.
+          alpha *= smoothstep(at - 0.12, at, uReveal * 1.06) * step(1e-4, uReveal);
         }
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
@@ -747,13 +856,89 @@ const wallMats = [];
   }
 }
 
-const rig = await rigPromise;
+let rig = await rigPromise;
 scene.add(rig.placer);
-const trunkGroup = rig.bodies.get("trunk_base");
+let trunkGroup = rig.bodies.get("trunk_base");
+locos.legs = {
+  model, data, rig, trunkGroup,
+  qposAdr, dofAdr, gyroAdr, trunkId, standKeyId, ballQposAdr, ballDofAdr, extraJoints,
+};
+
+// ── Locomotion variant switching (legs <-> rollers) ─────────────────────
+// The roller stack (XML + 5 extra meshes + kinematics + 2 ONNX policies)
+// is lazy-loaded on the first switch so the default boot stays untouched,
+// then kept resident: switching back and forth only swaps references.
+let rollersLoading = null;
+function ensureRollers() {
+  rollersLoading ??= (async () => {
+    const [{ xml: rXml, meshFiles: rMeshFiles }, rk] = await Promise.all([
+      buildPhysicsXml("robot_allcollisions_rollers.xml"),
+      loadKinematics(`${MODEL_DIR}/kinematics_rollers.json`),
+    ]);
+    const [rRig, sDrive, sCrouch] = await Promise.all([
+      buildRig(rk, { materialForMesh: materialHookFor(VARIANTS[currentVariant]) }),
+      ort.InferenceSession.create(signed(POLICIES.drive), sessionOpts),
+      ort.InferenceSession.create(signed(POLICIES.crouch), sessionOpts),
+      addMeshesToVfs(rMeshFiles),
+    ]);
+    sessions.drive = sDrive;
+    sessions.crouch = sCrouch;
+    const rModel = mujoco.MjModel.from_xml_string(rXml, vfs);
+    const rData = new mujoco.MjData(rModel);
+    locos.rollers = {
+      model: rModel, data: rData, rig: rRig, trunkGroup: rRig.bodies.get("trunk_base"),
+      ...resolveAddrs(rModel, rk),
+    };
+  })();
+  return rollersLoading;
+}
+
+function activateLoco(name) {
+  const L = locos[name];
+  loco = name;
+  scene.remove(rig.placer);
+  ({ model, data, rig, trunkGroup, qposAdr, dofAdr, gyroAdr, trunkId,
+     standKeyId, ballQposAdr, ballDofAdr, extraJoints } = L);
+  // The rig may have been built (or last shown) under another colourway.
+  applyVariant(rig, currentVariant);
+  scene.add(rig.placer);
+  document.body.classList.toggle("rollers", name === "rollers");
+  resetSim();
+  refreshVelCmd(); // held keys re-map to the new variant's velocity limits
+  if (uiReady) syncLocoHints();
+}
+
+// OSD line while the roller stack streams in, BIOS-style.
+let osdLoadEl = null;
+let locoSwitching = false;
+async function toggleLoco() {
+  // No switching mid one-shot (roll/kick/crouch end on their own and a
+  // teardown now would strand their timers), or while already switching.
+  if (locoSwitching || inputLocked || rollRun || kickRun || crouchRun || standTimer) return;
+  locoSwitching = true;
+  try {
+    const next = loco === "legs" ? "rollers" : "legs";
+    if (next === "rollers" && !locos.rollers) {
+      osdLoadEl?.removeAttribute("hidden");
+      await ensureRollers();
+    }
+    activateLoco(next);
+  } catch (e) {
+    rollersLoading = null; // allow a retry on transient fetch failures
+    console.error("[rl] roller switch failed", e);
+  } finally {
+    osdLoadEl?.setAttribute("hidden", "");
+    locoSwitching = false;
+  }
+}
 
 // ── Sci-fi entrance: Tron grid draw-in + duck dissolve-in ───────────────
 // Plays once per page load, right as the BIOS overlay fades (playBios
-// calls startEntrance). Gameplay stays live throughout. The duck dissolve
+// calls startEntrance). Until then the world stays hidden (grids at
+// reveal 0, duck fully dissolved) and every robot input is gated by
+// inputLocked; the sim itself keeps running so the duck stands idle
+// underneath and is mid-stride the moment it finishes materializing.
+// The duck dissolve
 // swaps each rig mesh onto a TEMPORARY clone of its material (the shared
 // matFor cache and ghost cloning stay untouched) and restores the
 // originals when the effect completes, so variants/ghosts behave exactly
@@ -798,7 +983,7 @@ if (uDissolveP < 1.0) {
   dsvEdge = 1.0 - smoothstep(0.015, 0.1, dsvThr - dsvN);
 }`)
         .replace("#include <dithering_fragment>", /* glsl */ `#include <dithering_fragment>
-gl_FragColor.rgb += dsvEdge * vec3(1.0, 0.824, 0.247);`);
+gl_FragColor.rgb += dsvEdge * vec3(0.5, 0.41, 0.12);`);
     };
     m.needsUpdate = true;
     dissolveSaved.push([o, orig]);
@@ -813,6 +998,11 @@ function restoreDissolve() {
   }
   dissolveSaved = null;
 }
+// Boot hidden: the duck is fully dissolved from the first rendered frame
+// (the grids already start at uReveal 0), so nothing shows through the
+// welcome modal's blur or during the BIOS replay.
+dissolveP.value = 0;
+applyDissolve();
 
 const ENTRANCE_GRID_S = 1.5; // floor draw-in duration
 const ENTRANCE_WALL_DELAY_S = 0.4; // walls start after the floor
@@ -822,6 +1012,10 @@ const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
 const easeOutCubic = (x) => 1 - Math.pow(1 - clamp01(x), 3);
 let entranceT0 = null; // wall-clock start while the sequence is playing
 let entranceDone = false; // latches: once per page load
+// Resolved when the entrance completes; gates the ghosts join below so a
+// translucent peer can't float around in the still-hidden world.
+let entranceFinishedResolve;
+const entranceFinished = new Promise((r) => { entranceFinishedResolve = r; });
 function startEntrance() {
   if (entranceT0 !== null || entranceDone) return;
   entranceT0 = performance.now();
@@ -839,12 +1033,15 @@ function updateEntrance() {
   const dp = clamp01((t - ENTRANCE_DISSOLVE_START_S) / ENTRANCE_DISSOLVE_S);
   dissolveP.value = dp;
   if (t >= ENTRANCE_WALL_DELAY_S + ENTRANCE_GRID_S && dp >= 1) {
-    // Park everything in exact steady state and drop the temp materials.
+    // Park everything in exact steady state, drop the temp materials and
+    // hand control to the user.
     entranceT0 = null;
     entranceDone = true;
     grid.material.uniforms.uReveal.value = 1;
     for (const m of wallMats) m.uniforms.uReveal.value = 1;
     restoreDissolve();
+    inputLocked = false;
+    entranceFinishedResolve();
   }
 }
 
@@ -1068,6 +1265,8 @@ function syncRig() {
   trunkGroup.position.set(qpos[0], qpos[1], qpos[2]);
   trunkGroup.quaternion.set(qpos[4], qpos[5], qpos[6], qpos[3]);
   for (let j = 0; j < NUM_JOINTS; j++) setJoint(rig, JOINT_NAMES[j], qpos[qposAdr[j]]);
+  // Passive hinges (roller wheels): purely visual, driven straight from qpos.
+  for (const ej of extraJoints) setJoint(rig, ej.name, qpos[ej.adr]);
   // Ball: raw MJCF pose inside the Z-up group, hidden while parked.
   ballMesh.visible = ballActive;
   if (ballActive) {
@@ -1147,12 +1346,23 @@ const keyEls = {
     roll: el("key-roll"), reset: el("key-reset"),
     kickl: el("key-kickl"), kickr: el("key-kickr"),
     ball: el("key-ball"), cam: el("key-cam"),
+    loco: el("key-loco"),
     padX: el("key-pad-x"), padSit: el("key-pad-sit"),
     padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
     padRb: el("key-pad-rb"), padLb: el("key-pad-lb"),
     padY: el("key-pad-y"), padRs: el("key-pad-rs"),
     padR3: el("key-pad-r3"),
   };
+osdLoadEl = el("osd-load");
+// Roller mode re-labels the trick hints (R / pad X trigger the crouch-glide
+// instead of the roll) and greys the legs-only actions via body.rollers.
+const rollLabelEl = el("key-roll-label");
+const padXLabelEl = el("key-pad-x-label");
+function syncLocoHints() {
+  const rollers = loco === "rollers";
+  if (rollLabelEl) rollLabelEl.textContent = rollers ? "crouch" : "roll";
+  if (padXLabelEl) padXLabelEl.textContent = rollers ? "crouch" : "roll";
+}
 const STICK_R = 15; // px, max dot travel inside the 46px stick circle
 let resetFlashAt = -Infinity;
 let ballFlashAt = -Infinity;
@@ -1172,12 +1382,14 @@ function renderStats() {
     `CTRL ${ctrlHz.toFixed(0)}HZ` + (peers ? ` \u00b7 ${peers + 1} ONLINE` : "");
 
   // Mini sticks: the dot mirrors the effective twist, lit yellow while the
-  // user is actually driving.
+  // user is actually driving. Normalized against the ACTIVE variant's
+  // velocity limits so full deflection reads the same in both.
   const manual = (padActive || held.size > 0) && mode !== "roll";
-  const yN = vx >= 0 ? vx / VEL_FWD : vx / -VEL_BACK;
+  const [limF, limB, limA] = velLims();
+  const yN = vx >= 0 ? vx / limF : vx / -limB;
   // Move stick is vertical-only now that strafe is gone.
   dotMove.style.transform = `translate(0px, ${-yN * STICK_R}px)`;
-  dotTurn.style.transform = `translate(${(-wz / VEL_ANG) * STICK_R}px, 0px)`;
+  dotTurn.style.transform = `translate(${(-wz / limA) * STICK_R}px, 0px)`;
   boxMove.classList.toggle("live", manual && Math.abs(vx) > 0.01);
   boxTurn.classList.toggle("live", manual && Math.abs(wz) > 0.01);
 
@@ -1187,13 +1399,15 @@ function renderStats() {
   for (const k of ["fwd", "back", "turnl", "turnr"]) {
     keyEls[k].classList.toggle("lit", held.has(k));
   }
-  keyEls.roll.classList.toggle("lit", mode === "roll" && rollSource === "kb");
+  const trick = mode === "roll" || mode === "crouch"; // same R / pad-X slot
+  keyEls.roll.classList.toggle("lit", trick && rollSource === "kb");
   keyEls.kickl.classList.toggle("lit", mode === "kickL" && kickSource === "kb");
   keyEls.kickr.classList.toggle("lit", mode === "kickR" && kickSource === "kb");
   keyEls.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
   keyEls.ball.classList.toggle("lit", performance.now() - ballFlashAt < 400);
   keyEls.cam.classList.toggle("lit", chaseCam); // steady while chasing
-  keyEls.padX.classList.toggle("lit", mode === "roll" && rollSource === "pad");
+  keyEls.loco?.classList.toggle("lit", loco === "rollers" || locoSwitching);
+  keyEls.padX.classList.toggle("lit", trick && rollSource === "pad");
   keyEls.padY.classList.toggle("lit", performance.now() - padYFlashAt < 400);
   keyEls.padRb.classList.toggle("lit", mode === "kickR" && kickSource === "pad");
   keyEls.padLb.classList.toggle("lit", mode === "kickL" && kickSource === "pad");
@@ -1231,8 +1445,9 @@ loop();
 
 // ── Input: hold-to-command keys + HUD buttons ───────────────────────────
 function refreshVelCmd() {
-  velCmd[0] = held.has("fwd") ? VEL_FWD : held.has("back") ? VEL_BACK : 0;
-  velCmd[2] = held.has("turnl") ? VEL_ANG : held.has("turnr") ? -VEL_ANG : 0;
+  const [limF, limB, limA] = velLims();
+  velCmd[0] = held.has("fwd") ? limF : held.has("back") ? limB : 0;
+  velCmd[2] = held.has("turnl") ? limA : held.has("turnr") ? -limA : 0;
 }
 
 // e.code is physical position, so one map covers QWERTY and AZERTY:
@@ -1249,6 +1464,7 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); resetSim(); resetFlashAt = performance.now(); return; }
   if (e.code === "KeyB") { spawnBall(); ballFlashAt = performance.now(); return; }
   if (e.code === "KeyC") { chaseCam = !chaseCam; return; }
+  if (e.code === "KeyM") { toggleLoco(); return; }
   if (e.code === "KeyR") { triggerRoll(); return; }
   // Physical Q/E (A/E on AZERTY): explicit left / right kick, mirroring
   // the pad's LB / RB.
@@ -1331,10 +1547,11 @@ pollPad = function pollGamepad() {
   // (No strafe; the right stick no longer drives movement.)
   const lx = dz(gp.axes[0] ?? 0), ly = dz(gp.axes[1] ?? 0);
   const up = -ly; // browser sticks report up as -1
+  const [limF, limB, limA] = velLims();
   const target = [
-    up >= 0 ? up * VEL_FWD : up * -VEL_BACK,
+    up >= 0 ? up * limF : up * -limB,
     0,
-    -lx * VEL_ANG,
+    -lx * limA,
   ];
   for (let i = 0; i < 3; i++) padCmd[i] += PAD_ALPHA * (target[i] - padCmd[i]);
   // Sticks grab command authority on first input, release when back at rest
@@ -1374,16 +1591,26 @@ pollPad = function pollGamepad() {
   padPrev.lb = lb;
 
   const dpadDown = !!gp.buttons[13]?.pressed;
-  if (dpadDown && !padPrev.dpadDown) {
+  if (dpadDown && !padPrev.dpadDown && loco === "legs") {
     const sitting = mode === "sitstand" && sitFlag === 1;
     setMode(sitting ? "walk" : "sit");
   }
   padPrev.dpadDown = dpadDown;
 
-  // DpadUp: straight back to running. Ignored mid-roll (it hands back
-  // to walk on its own, and switching on a tipped duck would floor it).
+  // DpadUp: short press = straight back to running (ignored mid-roll: it
+  // hands back to walk on its own, and switching on a tipped duck would
+  // floor it). HOLD ~1 s = legs <-> rollers switch, like the robot's 3 s
+  // hold on the real controller (shortened for the web).
   const dpadUp = !!gp.buttons[12]?.pressed;
-  if (dpadUp && !padPrev.dpadUp && mode !== "walk" && mode !== "roll") setMode("walk");
+  if (dpadUp && !padPrev.dpadUp) {
+    padPrev.dpadUpAt = now;
+    padPrev.dpadUpFired = false;
+    if (mode !== "walk" && mode !== "roll" && mode !== "crouch") setMode("walk");
+  }
+  if (dpadUp && !padPrev.dpadUpFired && now - padPrev.dpadUpAt >= 1000) {
+    padPrev.dpadUpFired = true; // latch: one switch per hold
+    toggleLoco();
+  }
   padPrev.dpadUp = dpadUp;
 
   // Triggers drive the mouth like the runtime (max of both), and the right
@@ -1403,11 +1630,15 @@ pollPad = function pollGamepad() {
 const modeLabel = document.getElementById("mode-label");
 
 function setMode(next) {
+  if (inputLocked) return;
   // No policy switching mid-roll or mid-kick: both end on their own and
-  // return to walk - switching now would floor the duck.
-  if ((mode === "roll" && rollRun) || (isKick() && kickRun)) return;
+  // return to walk - switching now would floor the duck. Sitting is a
+  // legs-only skill (the roller stance has no sitstand policy).
+  if ((mode === "roll" && rollRun) || (isKick() && kickRun) || (mode === "crouch" && crouchRun)) return;
+  if (next === "sit" && loco === "rollers") return;
   clearModeTimers();
   rollRun = null;
+  crouchRun = null;
   if (next !== "sit") {
     // Leaving a sit: let the sitstand policy stand the duck back up first.
     if (mode === "sitstand" && sitFlag === 1) {
@@ -1443,9 +1674,11 @@ function setMode(next) {
 // continuous action history across policy switches, and the roll initiates
 // more reliably mid-gait with the true last actions in the obs.
 function triggerRoll(source = "kb") {
+  // Same trigger slot in the roller variant fires its own trick.
+  if (loco === "rollers") return triggerCrouch(source);
   // Rolls only launch from a standing walk: from a sit (or mid sit/stand
   // hand-over) the roll policy just faceplants the duck.
-  if (mode !== "walk" || standTimer) return;
+  if (inputLocked || mode !== "walk" || standTimer) return;
   clearModeTimers();
   rollSource = source;
   mode = "roll";
@@ -1454,12 +1687,25 @@ function triggerRoll(source = "kb") {
   syncButtons();
 }
 
+// Roller-only one-shot: crouch, glide low, stand back up (phase-driven,
+// see the crouch constants up top). Reuses the roll's trigger + keycap.
+function triggerCrouch(source = "kb") {
+  if (inputLocked || mode !== "walk" || locoSwitching) return;
+  clearModeTimers();
+  rollSource = source;
+  mode = "crouch";
+  crouchRun = { phase: 0 };
+  syncButtons();
+}
+
 // One blind kick (the duck can't see any ball - it's a scripted boot),
 // left or right leg. Same launch constraints as the roll. Returns whether
 // the kick actually launched so the keyboard's foot alternation only
 // advances on real kicks.
 function triggerKick(foot, source = "kb") {
-  if (mode !== "walk" || standTimer) return false;
+  // Kicks are legs-only: in roller mode the ball is played by driving.
+  if (loco === "rollers") return false;
+  if (inputLocked || mode !== "walk" || standTimer) return false;
   clearModeTimers();
   kickSource = source;
   mode = foot === "left" ? "kickL" : "kickR";
@@ -1487,7 +1733,14 @@ function setModeLabel(text) {
 
 function syncButtons() {
   const sitting = mode === "sitstand" && sitFlag === 1;
-  setModeLabel(mode === "roll" ? "Roll" : isKick() ? "Kick" : sitting ? "Sit" : "Run");
+  setModeLabel(
+    mode === "roll" ? "Roll"
+    : mode === "crouch" ? "Crouch"
+    : isKick() ? "Kick"
+    : sitting ? "Sit"
+    : loco === "rollers" ? "Drive"
+    : "Run",
+  );
 }
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────
@@ -1521,12 +1774,20 @@ uiReady = true;
 // Deterministic hooks for automated verification (rAF pauses in
 // background tabs, and the control loop is async).
 window.rl = {
-  model, data, mujoco, camera, controls,
+  // model/data are getters: activateLoco swaps them wholesale.
+  get model() { return model; },
+  get data() { return data; },
+  mujoco, camera, controls,
   get mode() { return mode; },
   get sitFlag() { return sitFlag; },
   buildObs, cmd,
   velCmd, lastAction, resetSim,
   spawnBall, triggerKick, sessions, ort,
+  get loco() { return loco; },
+  get locoSwitching() { return locoSwitching; },
+  toggleLoco, ensureRollers,
+  triggerCrouch,
+  get crouchPhase() { return crouchRun?.phase ?? null; },
   get kickSteps() { return KICK_STEPS; },
   set kickSteps(v) { KICK_STEPS = v; },
   get ballActive() { return ballActive; },
@@ -1540,9 +1801,11 @@ window.rl = {
   // One full render-loop iteration, for tests driving frames manually.
   frame: () => { syncRig(); syncJaw(); controls.update(); updateChaseCam(); updateEntrance(); renderStats(); renderer.render(scene, camera); },
   get ghosts() { return ghosts; },
+  get inputLocked() { return inputLocked; },
   // Deterministic entrance controls for screenshots/tests: setting values
   // detaches the time-based driver; setDissolve(1) also restores the
-  // original materials (same cleanup as the real sequence).
+  // original materials and releases the input lock (same cleanup as the
+  // real sequence).
   entrance: {
     start: startEntrance,
     setReveal: (floor, wall = floor) => {
@@ -1552,7 +1815,7 @@ window.rl = {
     },
     setDissolve: (p) => {
       entranceT0 = null;
-      if (p >= 1) { dissolveP.value = 1; restoreDissolve(); }
+      if (p >= 1) { dissolveP.value = 1; restoreDissolve(); inputLocked = false; entranceFinishedResolve(); }
       else { applyDissolve(); dissolveP.value = p; }
     },
   },
@@ -1563,10 +1826,18 @@ window.rl = {
 // translucent ducks. Fire-and-forget: any failure just means no ghosts.
 const r3 = (x) => Math.round(x * 1000) / 1000;
 try {
+  // Ghosts only join once the entrance has fully played: the world (and
+  // this duck) must stay hidden until then, translucent peers included.
+  await entranceFinished;
   const { initGhosts } = await import(signed(`./ghosts.js?v=${SELF_V}`));
   ghosts = await initGhosts({
     scene, rig, cloneRig, setJoint, setJawOpen, applyVariant,
     jointNames: JOINT_NAMES,
+    // Ghost rig per locomotion flag: peers in roller mode clone the roller
+    // rig once this tab has built it, and fall back to the leg rig until
+    // then (their wheels also don't spin - joints aren't broadcast for
+    // the passive hinges). Known v1 limitation, documented in the README.
+    getRigFor: (l) => (l && locos.rollers ? locos.rollers.rig : locos.legs.rig),
     getLocalState: () => {
       const qpos = data.qpos;
       const j = new Array(NUM_JOINTS);
@@ -1576,6 +1847,7 @@ try {
         j,
         w: r3(jawOpenNow()),
         v: currentVariant,
+        l: loco === "rollers" ? 1 : 0,
       };
     },
   });

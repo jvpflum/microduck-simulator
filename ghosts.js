@@ -31,6 +31,10 @@ export async function initGhosts(env) {
   }
 
   const { scene, cloneRig, setJoint, setJawOpen, applyVariant, jointNames, getLocalState } = env;
+  // Locomotion-variant rig source: state.l 1 = rollers, 0/absent = legs
+  // (old clients never send it). Falls back to the leg rig when the local
+  // tab hasn't built the roller rig yet - known v1 limitation.
+  const rigFor = (l) => (env.getRigFor ? env.getRigFor(l ?? 0) : env.rig);
   // trystero 0.25 (backed by @trystero-p2p): makeAction returns
   // { send, onMessage, onReceiveProgress } where onMessage is a SETTER -
   // the receive handler is registered by assignment, not by calling it.
@@ -60,7 +64,7 @@ export async function initGhosts(env) {
 
   const ghosts = new Map(); // peerId -> ghost
   const makeGhost = (state) => {
-    const rig = cloneRig(env.rig);
+    const rig = cloneRig(rigFor(state.l));
     applyVariant(rig, state.v);
     ghostify(rig);
     scene.add(rig.placer);
@@ -68,7 +72,10 @@ export async function initGhosts(env) {
     // Snap straight to the first received pose: no fly-in from the origin.
     trunk.position.set(state.p[0], state.p[1], state.p[2]);
     trunk.quaternion.set(state.p[4], state.p[5], state.p[6], state.p[3]);
-    return { rig, trunk, target: state, joints: state.j.slice(), jaw: state.w ?? 0, variant: state.v };
+    return {
+      rig, trunk, target: state, joints: state.j.slice(), jaw: state.w ?? 0,
+      variant: state.v, loco: state.l ?? 0,
+    };
   };
 
   const removeGhost = (peerId) => {
@@ -101,6 +108,16 @@ export async function initGhosts(env) {
     }
     g.lastSeen = performance.now();
     g.target = state;
+    // Peer switched legs <-> rollers: rebuild its ghost on the other rig
+    // (cheap - cloneRig shares geometry).
+    if ((state.l ?? 0) !== g.loco) {
+      const seen = g.lastSeen;
+      removeGhost(peerId);
+      g = makeGhost(state);
+      g.lastSeen = seen;
+      ghosts.set(peerId, g);
+      return;
+    }
     if (state.v !== g.variant) {
       g.variant = state.v;
       applyVariant(g.rig, state.v);
