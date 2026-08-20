@@ -195,6 +195,9 @@ const held = new Set();
 
 let mode = "walk"; // "walk" | "sitstand" | "roulade"
 let sitFlag = 0;
+// One-shot roulade tracking: trigger time + whether the trunk actually
+// tipped over yet. Set by triggerRoulade, cleared when we hand back to walk.
+let rouladeRun = null;
 
 function resetSim() {
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
@@ -267,6 +270,28 @@ async function controlStep() {
     if (now - fallenSince > graceMs) { resetSim(); fallenSince = null; }
   } else {
     fallenSince = null;
+  }
+
+  // One-shot roulade, step-counted like the robot runtime (a single roll is
+  // ~1 s = 50 control steps there): hand back to walking once the trunk has
+  // tipped over and is upright again, or after a hard 2 s window if the roll
+  // never initiated. Counting steps instead of wall time keeps the logic
+  // correct when the sim is fast-forwarded or the tab is throttled.
+  if (mode === "roulade" && rouladeRun) {
+    rouladeRun.steps++;
+    if (obs[5] > -0.3) rouladeRun.tipped = true;
+    const upright = obs[5] < -0.85;
+    const done = rouladeRun.tipped && upright && rouladeRun.steps >= 40;
+    const expired = rouladeRun.steps >= 150; // 3 s, roll should long be over
+    if (done || expired) {
+      rouladeRun = null;
+      mode = "walk";
+      lastAction.fill(0);
+      // Timed out mid-roll: don't hand a tipped duck to the walking policy
+      // (it has no get-up skill), restart from the keyframe instead.
+      if (!upright) resetSim();
+      if (uiReady) syncButtons();
+    }
   }
 }
 
@@ -464,6 +489,7 @@ const KEYMAP = {
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyR") { resetSim(); return; }
+  if (e.code === "Space") { e.preventDefault(); triggerRoulade(); return; }
   const act = KEYMAP[e.code];
   if (!act) return;
   e.preventDefault();
@@ -481,10 +507,10 @@ window.addEventListener("blur", () => { held.clear(); refreshVelCmd(); });
 const btnWalk = document.getElementById("btn-walk");
 const btnSit = document.getElementById("btn-sit");
 const btnRoulade = document.getElementById("btn-roulade");
-document.getElementById("btn-reset").addEventListener("click", resetSim);
 
 function setMode(next) {
   quack();
+  rouladeRun = null;
   if (next !== "sit") {
     // Leaving a sit: let the sitstand policy stand the duck back up first.
     if (mode === "sitstand" && sitFlag === 1) {
@@ -508,6 +534,19 @@ function setMode(next) {
   }
   syncButtons();
 }
+
+// One roulade, then straight back to running (Space key or the button).
+// lastAction is deliberately NOT zeroed here: the robot runtime keeps one
+// continuous action history across policy switches, and the roll initiates
+// more reliably mid-gait with the true last actions in the obs.
+function triggerRoulade() {
+  if (mode === "roulade") return;
+  quack();
+  mode = "roulade";
+  sitFlag = 0;
+  rouladeRun = { steps: 0, tipped: false };
+  syncButtons();
+}
 function syncButtons() {
   const sitting = mode === "sitstand" && sitFlag === 1;
   btnWalk.classList.toggle("on", mode === "walk" || (mode === "sitstand" && !sitting));
@@ -516,7 +555,7 @@ function syncButtons() {
 }
 btnWalk.addEventListener("click", () => setMode("walk"));
 btnSit.addEventListener("click", () => setMode("sit"));
-btnRoulade.addEventListener("click", () => setMode("roulade"));
+btnRoulade.addEventListener("click", triggerRoulade);
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────
 // One representative colour per variant so the dots read at a glance.
