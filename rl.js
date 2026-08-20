@@ -553,11 +553,14 @@ function refreshVelCmd() {
   velCmd[2] = held.has("turnl") ? VEL_ANG : held.has("turnr") ? -VEL_ANG : 0;
 }
 
+// e.code is physical position, so one map covers QWERTY and AZERTY:
+// WASD/ZQSD run + turn, the physical Q/E row (A/E on AZERTY) strafes.
 const KEYMAP = {
-  ArrowUp: "fwd", KeyW: "fwd", KeyZ: "fwd",
+  ArrowUp: "fwd", KeyW: "fwd",
   ArrowDown: "back", KeyS: "back",
-  ArrowLeft: "turnl", ArrowRight: "turnr",
-  KeyA: "left", KeyQ: "left", KeyE: "right", KeyD: "right",
+  ArrowLeft: "turnl", KeyA: "turnl",
+  ArrowRight: "turnr", KeyD: "turnr",
+  KeyQ: "left", KeyE: "right",
 };
 
 window.addEventListener("keydown", (e) => {
