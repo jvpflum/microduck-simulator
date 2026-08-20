@@ -125,6 +125,8 @@
         pointer-events: auto;
       }
       #hud .keys b { color: rgba(255, 255, 255, 0.75); font-weight: 600; }
+      #pad-hint { display: none; }
+      body.pad-connected #pad-hint { display: inline; }
       #stats {
         position: fixed;
         top: 1.4rem;
@@ -164,7 +166,8 @@
       </div>
       <div class="keys">
         <b>&uarr;/&darr;</b> forward / back &nbsp; <b>&larr;/&rarr;</b> turn &nbsp; <b>A/E</b> strafe<br />
-        <b>Space</b> roulade &nbsp; <b>R</b> reset &nbsp; drag to orbit &nbsp; scroll to zoom
+        <b>Space</b> roulade &nbsp; <b>R</b> reset &nbsp; drag to orbit &nbsp; scroll to zoom<br />
+        <span id="pad-hint">gamepad: sticks move &nbsp; <b>X</b> roulade &nbsp; <b>&dArr;</b> sit &nbsp; <b>RT</b> quack</span>
       </div>
     </div>
     <div id="loading">Compiling physics&hellip;</div>

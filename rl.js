@@ -189,6 +189,10 @@ const lastAction = new Float32Array(NUM_JOINTS);
 const obs = new Float32Array(OBS_SIZE);
 const cmd = new Float32Array(CMD_SIZE); // [vx, vy, wz, head(4), body(6)]
 const velCmd = new Float32Array(3); // twist command, driven by held keys
+// Gamepad twist (EMA-smoothed like the robot runtime). Declared up here:
+// the control loop reads it before the input section below has evaluated.
+const padCmd = new Float32Array(3);
+let padActive = false;
 // Declared before the control loop starts: buildObs checks it to decide
 // between the auto-run default and manual key control.
 const held = new Set();
@@ -231,8 +235,12 @@ function buildObs() {
   // gets a forward velocity by default, keys override it.
   cmd.fill(0, 0, 3);
   if (mode === "walk") {
-    cmd[0] = held.size ? velCmd[0] : VEL_FWD;
-    cmd[1] = velCmd[1]; cmd[2] = velCmd[2];
+    if (padActive) {
+      cmd[0] = padCmd[0]; cmd[1] = padCmd[1]; cmd[2] = padCmd[2];
+    } else {
+      cmd[0] = held.size ? velCmd[0] : VEL_FWD;
+      cmd[1] = velCmd[1]; cmd[2] = velCmd[2];
+    }
   } else if (mode === "roulade") {
     cmd[0] = velCmd[0]; cmd[1] = velCmd[1]; cmd[2] = velCmd[2];
   } else {
@@ -438,17 +446,20 @@ function syncRig() {
 
 // Quack: a quick jaw flap on every mode/colour change. The jaw isn't a
 // MuJoCo joint (duck.js re-creates the hinge in JS), so this is purely
-// cosmetic and can't upset the policy.
+// cosmetic and can't upset the policy. A held gamepad trigger drives the
+// jaw analogically on top (same as the robot's mouth trigger).
 const QUACK_MS = 480;
 let quackAt = -Infinity;
+let padJaw = 0;
 const quack = () => { quackAt = performance.now(); };
 function syncJaw() {
   const t = (performance.now() - quackAt) / QUACK_MS;
-  setJawOpen(rig, t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0);
+  const flap = t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0;
+  setJawOpen(rig, Math.max(flap, padJaw));
 }
 
 function renderStats() {
-  const [vx, vy, wz] = velCmd;
+  const [vx, vy, wz] = padActive ? padCmd : velCmd;
   const posture = mode === "walk"
     ? `running policy`
     : mode === "roulade"
@@ -460,8 +471,13 @@ function renderStats() {
     `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s`;
 }
 
+// Real implementation assigned in the gamepad section below; the render
+// loop starts before that section has evaluated, hence the indirection.
+let pollPad = () => {};
+
 function loop() {
   requestAnimationFrame(loop);
+  pollPad();
   syncRig();
   syncJaw();
   controls.update();
@@ -503,6 +519,57 @@ window.addEventListener("keyup", (e) => {
   refreshVelCmd();
 });
 window.addEventListener("blur", () => { held.clear(); refreshVelCmd(); });
+
+// ── Gamepad: same mapping as the robot runtime (microduck_runtime) ──────
+// Sticks: L vertical = vx (asymmetric fwd/back), L horizontal = strafe,
+// R horizontal = turn, all EMA-smoothed like the runtime's cmd_alpha.
+// X = roulade, DpadDown = sit/stand toggle, RT = mouth (analog) + quack.
+const PAD_DEADZONE = 0.15;
+const PAD_ALPHA = 0.12;
+const padPrev = { x: false, dpadDown: false, rt: 0 };
+const dz = (v) => (Math.abs(v) < PAD_DEADZONE ? 0 : v);
+
+pollPad = function pollGamepad() {
+  const gp = [...(navigator.getGamepads?.() ?? [])].find((p) => p && p.connected);
+  document.body.classList.toggle("pad-connected", !!gp);
+  if (!gp) {
+    if (padActive) { padActive = false; padCmd.fill(0); padJaw = 0; }
+    return;
+  }
+  const lx = dz(gp.axes[0] ?? 0), ly = dz(gp.axes[1] ?? 0), rx = dz(gp.axes[2] ?? 0);
+  const up = -ly; // browser sticks report up as -1
+  const target = [
+    up >= 0 ? up * VEL_FWD : up * -VEL_BACK,
+    -lx * VEL_LAT,
+    -rx * VEL_ANG,
+  ];
+  for (let i = 0; i < 3; i++) padCmd[i] += PAD_ALPHA * (target[i] - padCmd[i]);
+  // Sticks grab command authority on first input, release when back at rest
+  // (then keyboard / auto-run take over again).
+  const stickInput = lx !== 0 || ly !== 0 || rx !== 0;
+  if (stickInput) padActive = true;
+  else if (padActive && Math.abs(padCmd[0]) + Math.abs(padCmd[1]) + Math.abs(padCmd[2]) < 0.01) {
+    padActive = false;
+    padCmd.fill(0);
+  }
+
+  // Standard mapping indices: X=2, DpadDown=13, RT=7 (analog value).
+  const x = !!gp.buttons[2]?.pressed;
+  if (x && !padPrev.x) triggerRoulade();
+  padPrev.x = x;
+
+  const dpadDown = !!gp.buttons[13]?.pressed;
+  if (dpadDown && !padPrev.dpadDown) {
+    const sitting = mode === "sitstand" && sitFlag === 1;
+    setMode(sitting ? "walk" : "sit");
+  }
+  padPrev.dpadDown = dpadDown;
+
+  const rt = gp.buttons[7]?.value ?? 0;
+  padJaw = rt;
+  if (padPrev.rt < 0.3 && rt >= 0.3) quack();
+  padPrev.rt = rt;
+};
 
 const btnWalk = document.getElementById("btn-walk");
 const btnSit = document.getElementById("btn-sit");
