@@ -154,9 +154,12 @@ async function buildPhysicsXml() {
   // and the ghosts' getLocalState.
   const ballBody = el("body", { name: "ball", pos: BALL_PARK_POS });
   ballBody.appendChild(el("freejoint", { name: "ball_freejoint" }));
+  // condim 6 enables the torsional + rolling friction components of the
+  // friction vector; with the default condim 3 they are ignored and a
+  // rolling ball never decelerates.
   ballBody.appendChild(el("geom", {
     name: "ball_geom", type: "sphere", size: String(BALL_RADIUS),
-    mass: "0.03", friction: "0.4 0.01 0.003", solref: "0.03 0.4",
+    mass: "0.03", friction: "0.4 0.01 0.003", solref: "0.03 0.4", condim: "6",
   }));
   doc.querySelector("worldbody").appendChild(ballBody);
   // STAND keyframe from mjlab's scene_walk.xml (STAND2 pose). The ball's
@@ -534,22 +537,57 @@ const rig = await rigPromise;
 scene.add(rig.placer);
 const trunkGroup = rig.bodies.get("trunk_base");
 
-// Beach-ball look: alternating longitude panels drawn on a small canvas
-// and wrapped around the sphere (equirectangular UVs), so the rolling
-// actually reads visually. Colours match the dark scene + yellow accents.
-function makeBeachBallTexture() {
+// Soccer-ball look on an equirectangular CanvasTexture: off-white base
+// (pure white would blow out under ACES tone mapping) with black
+// pentagons - a cap at each pole plus two staggered rings - so the
+// rolling actually reads visually.
+function makeSoccerBallTexture() {
   const c = document.createElement("canvas");
-  c.width = 512;
-  c.height = 256;
+  c.width = 1024;
+  c.height = 512;
   const ctx = c.getContext("2d");
-  const panels = ["#ffd23f", "#efe9dc", "#22222c", "#efe9dc", "#ffd23f", "#efe9dc", "#22222c", "#efe9dc"];
-  const w = c.width / panels.length;
-  for (let i = 0; i < panels.length; i++) {
-    ctx.fillStyle = panels[i];
-    ctx.fillRect(Math.floor(i * w), 0, Math.ceil(w) + 1, c.height);
+  ctx.fillStyle = "#e9e7e0";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = "#17171d";
+  // Pole "pentagons": a full-width strip at each canvas edge maps to a
+  // clean round patch at the pole, sidestepping the equirect pinch that
+  // would smear an actual drawn polygon there.
+  const capH = c.height * 0.075;
+  ctx.fillRect(0, 0, c.width, capH);
+  ctx.fillRect(0, c.height - capH, c.width, capH);
+  // Pentagon at (lon, lat), angular radius r (all degrees). Horizontal
+  // extent is stretched by 1/cos(lat) to counter the equirect longitude
+  // compression away from the equator; drawn three times so panels
+  // crossing the +-180 deg seam wrap around cleanly.
+  const pent = (lonDeg, latDeg, rDeg, rot) => {
+    const x = ((lonDeg + 180) / 360) * c.width;
+    const y = ((90 - latDeg) / 180) * c.height;
+    const ry = (rDeg / 180) * c.height;
+    const rx = ry / Math.cos((latDeg * Math.PI) / 180);
+    for (const dx of [-c.width, 0, c.width]) {
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const a = rot + (i * 2 * Math.PI) / 5;
+        const px = x + dx + Math.cos(a) * rx;
+        const py = y + Math.sin(a) * ry;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+  // Two staggered rings of five (12 pentagons total with the poles),
+  // roughly the truncated-icosahedron layout. Point-up above the
+  // equator, point-down below, like the real panel orientation.
+  for (let i = 0; i < 5; i++) {
+    pent(-180 + i * 72, 27, 15, -Math.PI / 2);
+    pent(-144 + i * 72, -27, 15, Math.PI / 2);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
+  // Texel footprints get extremely anamorphic near the UV poles; without
+  // anisotropy the cap edge visibly scallops at close range.
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tex;
 }
 // Same Z-up -> Y-up trick as the duck rig: the group takes the axis fix,
@@ -557,8 +595,10 @@ function makeBeachBallTexture() {
 const ballGroup = new THREE.Group();
 ballGroup.rotation.x = -Math.PI / 2;
 const ballMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(BALL_RADIUS, 32, 24),
-  new THREE.MeshStandardMaterial({ map: makeBeachBallTexture(), roughness: 0.35, metalness: 0 }),
+  // 48x32 segments: the coarser default makes the UV interpolation near
+  // the poles visibly scallop the round cap edge of the texture.
+  new THREE.SphereGeometry(BALL_RADIUS, 48, 32),
+  new THREE.MeshStandardMaterial({ map: makeSoccerBallTexture(), roughness: 0.35, metalness: 0 }),
 );
 ballMesh.visible = false;
 ballGroup.add(ballMesh);
