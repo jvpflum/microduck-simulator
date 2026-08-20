@@ -1,19 +1,175 @@
 <!doctype html>
-<html>
-	<head>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width" />
-		<title>My static Space</title>
-		<link rel="stylesheet" href="style.css" />
-	</head>
-	<body>
-		<div class="card">
-			<h1>Welcome to your static Space!</h1>
-			<p>You can modify this app directly by editing <i>index.html</i> in the Files and versions tab.</p>
-			<p>
-				Also don't forget to check the
-				<a href="https://huggingface.co/docs/hub/spaces" target="_blank">Spaces documentation</a>.
-			</p>
-		</div>
-	</body>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Microduck RL playground</title>
+    <style>
+      :root {
+        --ink: #08080c;
+        --yellow: #ffd23f;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        background: var(--ink);
+        color: rgba(255, 255, 255, 0.85);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        overflow: hidden;
+      }
+      #scene { position: fixed; inset: 0; }
+      #scene canvas { display: block; }
+      .halftone {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.5px);
+        background-size: 21px 21px;
+        mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
+        -webkit-mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
+      }
+      header {
+        position: fixed;
+        top: 2.6rem;
+        left: 0;
+        right: 0;
+        text-align: center;
+        pointer-events: none;
+      }
+      header .facts {
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      header .facts b { color: var(--yellow); font-weight: 600; }
+      header h1 {
+        margin-top: 0.5rem;
+        font-size: clamp(1.6rem, 4vw, 2.6rem);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: #fff;
+      }
+      header h1 #verb { color: var(--yellow); }
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+        text-align: center;
+        padding: 0 2rem;
+        z-index: 20;
+      }
+      /* Bottom control bar */
+      #hud {
+        position: fixed;
+        bottom: 1.4rem;
+        left: 0;
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.7rem;
+        z-index: 10;
+      }
+      #hud .row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      #hud button {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.8);
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        padding: 0.5rem 1rem;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+      }
+      #hud button:hover { background: rgba(255, 255, 255, 0.1); }
+      #hud button.on {
+        background: #ffc61e;
+        border-color: #ffc61e;
+        color: #08080c;
+      }
+      /* Colour swatches */
+      #swatches { gap: 0.6rem; }
+      #swatches button {
+        width: 1.5rem;
+        height: 1.5rem;
+        padding: 0;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+      }
+      #swatches button:hover { transform: scale(1.15); }
+      #swatches button.on {
+        border-color: #fff;
+        transform: scale(1.15);
+      }
+      #hud .keys {
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      #hud .keys b { color: rgba(255, 255, 255, 0.75); font-weight: 600; }
+      #stats {
+        position: fixed;
+        top: 1.4rem;
+        right: 1.6rem;
+        z-index: 10;
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-align: right;
+        color: rgba(255, 255, 255, 0.4);
+        line-height: 1.7;
+        font-variant-numeric: tabular-nums;
+      }
+      #stats b { color: var(--yellow); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <div class="halftone"></div>
+    <header>
+      <div class="facts"><b>Microduck</b> &middot; real trained policies &middot; MuJoCo + ONNX, live in your browser</div>
+      <h1>This one actually learned to <span id="verb">run</span></h1>
+    </header>
+    <div id="stats"></div>
+    <div id="hud" hidden>
+      <div class="row">
+        <button id="btn-walk" class="on">Run</button>
+        <button id="btn-sit">Sit</button>
+        <button id="btn-roulade">Roulade</button>
+        <button id="btn-reset">Reset</button>
+      </div>
+      <div class="row" id="swatches"></div>
+      <div class="keys">
+        <b>&uarr;/&darr;</b> forward / back &nbsp; <b>&larr;/&rarr;</b> turn &nbsp;
+        <b>A/E</b> strafe &nbsp; <b>R</b> reset &nbsp; drag to orbit
+      </div>
+    </div>
+    <div id="loading">Compiling physics&hellip;</div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module" src="./rl.js"></script>
+  </body>
 </html>
