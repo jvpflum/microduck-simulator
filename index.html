@@ -253,83 +253,203 @@
         inset: 0;
         z-index: 30;
         display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.5rem;
-        background: rgba(8, 8, 12, 0.45);
-        backdrop-filter: blur(16px) saturate(1.3);
-        -webkit-backdrop-filter: blur(16px) saturate(1.3);
+        padding: 1.25rem;
+        overflow-y: auto;
+        background: rgba(8, 8, 12, 0.5);
+        backdrop-filter: blur(18px) saturate(1.3);
+        -webkit-backdrop-filter: blur(18px) saturate(1.3);
         opacity: 1;
         transition: opacity 0.35s ease;
       }
       #welcome.closing { opacity: 0; pointer-events: none; }
       #welcome .card {
         position: relative;
-        max-width: 430px;
+        /* Auto margins center the card and degrade to scroll on overflow */
+        margin: auto;
         width: 100%;
-        padding: 2.2rem 2.2rem 2rem;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 20px;
+        max-width: 480px;
+        padding: 2.3rem 2.4rem 1.8rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 24px;
         background:
-          radial-gradient(120% 90% at 50% 0%, rgba(255, 210, 63, 0.07), transparent 55%),
-          rgba(14, 14, 20, 0.92);
-        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+          radial-gradient(130% 80% at 50% 0%, rgba(255, 210, 63, 0.06), transparent 55%),
+          rgba(13, 13, 19, 0.94);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.06),
+          0 24px 60px rgba(0, 0, 0, 0.55),
+          0 80px 160px rgba(0, 0, 0, 0.4);
         text-align: center;
-        animation: card-in 0.5s cubic-bezier(0.2, 0.9, 0.25, 1.15) both;
+        animation: card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
       }
       @keyframes card-in {
-        from { transform: translateY(18px) scale(0.94); opacity: 0; }
+        from { transform: translateY(14px) scale(0.965); opacity: 0; }
         to { transform: none; opacity: 1; }
       }
-      /* Duck-head mark from the site header: closed by default, open on
-         hover (same swap as the site). */
+      /* Rows fade in with a gentle stagger; no bounce anywhere. */
+      #welcome .card > * {
+        animation: row-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      #welcome .card > :nth-child(1) { animation-delay: 0.05s; }
+      #welcome .card > :nth-child(2) { animation-delay: 0.11s; }
+      #welcome .card > :nth-child(3) { animation-delay: 0.17s; }
+      #welcome .card > :nth-child(4) { animation-delay: 0.23s; }
+      #welcome .card > :nth-child(5) { animation-delay: 0.27s; }
+      @keyframes row-in {
+        from { transform: translateY(8px); opacity: 0; }
+        to { transform: none; opacity: 1; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #welcome .card, #welcome .card > * { animation: none; }
+      }
+      /* Header: duck-head mark (closed by default, open on hover - same
+         swap as the site) over a clean typographic identity. */
       #welcome .logo-head {
         position: relative;
-        width: 7.2rem;
-        margin: 0.3rem auto 0;
+        width: 5.8rem;
+        margin: 0 auto;
         filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.45));
       }
       #welcome .logo-head img { display: block; width: 100%; }
       #welcome .logo-head .open { position: absolute; inset: 0; opacity: 0; }
       #welcome .logo-head:hover .open { opacity: 1; }
       #welcome .logo-head:hover .closed { opacity: 0; }
+      #welcome .title {
+        margin-top: 0.8rem;
+        font-size: 1.4rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        color: rgba(255, 255, 255, 0.95);
+      }
       #welcome .subtitle {
+        margin-top: 0.35rem;
+        font-size: 0.6rem;
+        font-weight: 700;
+        letter-spacing: 0.34em;
+        text-indent: 0.34em; /* recenter: tracking pads the right edge only */
+        text-transform: uppercase;
+        color: rgba(255, 210, 63, 0.8);
+      }
+      #welcome .tagline {
+        margin: 0.8rem auto 0;
+        max-width: 42ch;
+        font-size: 0.78rem;
+        line-height: 1.6;
+        color: rgba(255, 255, 255, 0.58);
+        text-wrap: balance;
+      }
+      /* Section label with hairlines on both sides */
+      #welcome .section-label {
+        display: flex;
+        align-items: center;
+        gap: 0.9rem;
+        margin: 1.5rem 0 0.8rem;
+        font-size: 0.56rem;
+        font-weight: 700;
+        letter-spacing: 0.28em;
+        text-indent: 0.28em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.35);
+      }
+      #welcome .section-label::before,
+      #welcome .section-label::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      /* Controls: six keycap tiles on a tidy grid */
+      #welcome .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.5rem;
+      }
+      #welcome .tile {
+        padding: 0.75rem 0.4rem 0.7rem;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      /* Fixed-height keycap area so every tile's label sits on the same
+         baseline whether it holds one cap or the arrow cluster. */
+      #welcome .caps {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.2rem;
+        height: 3.3rem;
+      }
+      #welcome .caps .krow {
+        display: flex;
+        gap: 0.2rem;
+        justify-content: center;
+      }
+      #welcome kbd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.55rem;
+        height: 1.55rem;
+        padding: 0 0.45rem;
+        font: inherit;
+        font-size: 0.68rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.88);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 6px;
+        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      /* The arrow cluster packs six caps in two rows, so its caps shrink a
+         notch; every other tile keeps the full-size cap. */
+      #welcome .caps.cluster kbd { min-width: 1.4rem; height: 1.4rem; padding: 0 0.3rem; font-size: 0.62rem; }
+      #welcome .t-name {
         margin-top: 0.55rem;
         font-size: 0.62rem;
         font-weight: 700;
-        letter-spacing: 0.32em;
+        letter-spacing: 0.18em;
+        text-indent: 0.18em;
         text-transform: uppercase;
-        color: rgba(255, 210, 63, 0.75);
+        color: rgba(255, 255, 255, 0.85);
       }
-      #welcome .tagline {
-        margin-top: 0.5rem;
-        font-size: 0.8rem;
-        line-height: 1.65;
-        color: rgba(255, 255, 255, 0.6);
+      #welcome .t-hint {
+        margin-top: 0.2rem;
+        font-size: 0.6rem;
+        color: rgba(255, 255, 255, 0.38);
       }
-      #welcome ul {
-        list-style: none;
-        margin: 1.4rem 0 1.6rem;
-        text-align: left;
-        display: flex;
-        flex-direction: column;
-        gap: 0.55rem;
-      }
-      #welcome li {
-        display: flex;
-        align-items: baseline;
-        gap: 0.7rem;
-        font-size: 0.78rem;
-        line-height: 1.5;
-        color: rgba(255, 255, 255, 0.72);
-      }
-      #welcome li b {
-        flex: 0 0 4.6rem;
+      #welcome .orbit-hint {
+        margin-top: 0.7rem;
         font-size: 0.62rem;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.35);
+      }
+      /* Secondary row: gamepad + live ghosts */
+      #welcome .extras {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.2rem;
+        margin-top: 1.3rem;
+        padding-top: 1.1rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      #welcome .x-label {
+        display: block;
+        margin-bottom: 0.3rem;
+        font-size: 0.56rem;
         font-weight: 700;
-        letter-spacing: 0.16em;
+        letter-spacing: 0.24em;
+        text-indent: 0.24em;
         text-transform: uppercase;
-        color: rgba(255, 210, 63, 0.85);
+        color: rgba(255, 210, 63, 0.7);
+      }
+      #welcome .x-item {
+        font-size: 0.68rem;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.5);
+        text-wrap: balance;
+      }
+      #welcome .cta {
+        margin-top: 1.5rem;
       }
       #welcome-go {
         appearance: none;
@@ -340,22 +460,54 @@
         font-size: 0.75rem;
         font-weight: 700;
         letter-spacing: 0.14em;
+        text-indent: 0.14em;
         text-transform: uppercase;
-        padding: 0.75rem 2.2rem;
+        padding: 0.8rem 2.6rem;
         border-radius: 999px;
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.15s ease;
       }
       #welcome-go:hover {
-        transform: translateY(-1px) scale(1.03);
-        box-shadow: 0 6px 24px rgba(255, 210, 63, 0.35);
+        transform: translateY(-1px);
+        box-shadow: 0 8px 28px rgba(255, 210, 63, 0.3);
+      }
+      #welcome-go:focus-visible {
+        outline: 2px solid rgba(255, 255, 255, 0.85);
+        outline-offset: 3px;
       }
       #welcome .fineprint {
         margin-top: 0.9rem;
-        font-size: 0.6rem;
+        font-size: 0.58rem;
         letter-spacing: 0.1em;
         text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.3);
+        color: rgba(255, 255, 255, 0.28);
+      }
+      /* Narrow screens: stack the grid two-up, tighten the whole rhythm so
+         the card still fits a small phone viewport without scrolling */
+      @media (max-width: 480px) {
+        #welcome .card { padding: 1.6rem 1.3rem 1.4rem; border-radius: 20px; }
+        #welcome .logo-head { width: 4.3rem; }
+        #welcome .title { margin-top: 0.6rem; font-size: 1.2rem; }
+        #welcome .tagline { margin-top: 0.55rem; font-size: 0.73rem; }
+        #welcome .section-label { margin: 1.1rem 0 0.7rem; }
+        #welcome .grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
+        #welcome .tile { padding: 0.6rem 0.4rem 0.55rem; }
+        #welcome .caps { height: 2.7rem; }
+        #welcome .t-name { margin-top: 0.4rem; }
+        #welcome .orbit-hint { margin-top: 0.55rem; }
+        #welcome .extras { grid-template-columns: 1fr; gap: 0.5rem; margin-top: 1rem; padding-top: 0.9rem; }
+        #welcome .x-label { display: inline; margin-right: 0.45rem; }
+        #welcome .cta { margin-top: 1.1rem; }
+      }
+      /* Short laptop viewports: shave vertical rhythm so it never scrolls */
+      @media (max-height: 760px) {
+        #welcome .logo-head { width: 4.8rem; }
+        #welcome .card { padding-top: 1.7rem; }
+        #welcome .title { margin-top: 0.6rem; font-size: 1.25rem; }
+        #welcome .tagline { margin-top: 0.6rem; }
+        #welcome .section-label { margin: 1.1rem 0 0.7rem; }
+        #welcome .extras { margin-top: 1rem; padding-top: 0.9rem; }
+        #welcome .cta { margin-top: 1.1rem; }
       }
       #brand { cursor: pointer; }
     </style>
@@ -410,26 +562,70 @@
 
     <div id="welcome" hidden>
       <div class="card" role="dialog" aria-modal="true" aria-label="Microduck playground">
-        <div class="logo-head">
-          <img class="closed" id="logo-head-closed" alt="Microduck" />
-          <img class="open" id="logo-head-open" alt="" aria-hidden="true" />
+        <header>
+          <div class="logo-head">
+            <img class="closed" id="logo-head-closed" alt="Microduck" />
+            <img class="open" id="logo-head-open" alt="" aria-hidden="true" />
+          </div>
+          <h1 class="title">Microduck</h1>
+          <div class="subtitle">RL playground</div>
+          <p class="tagline">
+            Real physics, real trained neural policies, running live in
+            your browser fifty times a second.
+          </p>
+        </header>
+        <section aria-label="Controls">
+          <div class="section-label">Controls</div>
+          <div class="grid">
+            <div class="tile">
+              <div class="caps cluster">
+                <span class="krow"><kbd>&uarr;</kbd></span>
+                <span class="krow"><kbd>&larr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd></span>
+              </div>
+              <div class="t-name">Move</div>
+              <div class="t-hint">arrows or ZQSD</div>
+            </div>
+            <div class="tile">
+              <div class="caps"><span class="krow"><kbd>A</kbd><kbd>E</kbd></span></div>
+              <div class="t-name">Kick</div>
+              <div class="t-hint">left / right</div>
+            </div>
+            <div class="tile">
+              <div class="caps"><kbd>R</kbd></div>
+              <div class="t-name">Roll</div>
+              <div class="t-hint">barrel roll</div>
+            </div>
+            <div class="tile">
+              <div class="caps"><kbd>B</kbd></div>
+              <div class="t-name">Ball</div>
+              <div class="t-hint">pop one in</div>
+            </div>
+            <div class="tile">
+              <div class="caps"><kbd>C</kbd></div>
+              <div class="t-name">Camera</div>
+              <div class="t-hint">toggle chase</div>
+            </div>
+            <div class="tile">
+              <div class="caps"><kbd>Space</kbd></div>
+              <div class="t-name">Reset</div>
+              <div class="t-hint">fresh start</div>
+            </div>
+          </div>
+          <div class="orbit-hint">drag to orbit &middot; scroll to zoom</div>
+        </section>
+        <section class="extras">
+          <div class="x-item">
+            <span class="x-label">Gamepad</span>
+            Plug one in, same mapping as the real robot.
+          </div>
+          <div class="x-item">
+            <span class="x-label">Live ghosts</span>
+            Other visitors appear as translucent ducks.
+          </div>
+        </section>
+        <div class="cta">
+          <button id="welcome-go">Waddle in</button>
         </div>
-        <div class="subtitle">RL playground</div>
-        <p class="tagline">
-          A real robot brain in your browser: MuJoCo physics compiled to
-          WebAssembly, driven by the duck's actual trained neural policies
-          at 50&nbsp;Hz. No server, no pre-baked animation.
-        </p>
-        <ul>
-          <li><b>Move</b><span>Arrows or ZQSD to run and turn, drag to orbit.</span></li>
-          <li><b>Roll</b><span>R triggers a barrel roll, then it gets back up.</span></li>
-          <li><b>Kick</b><span>A / E kick left / right (LB / RB on the pad).</span></li>
-          <li><b>Ball</b><span>B pops a ball to kick around (Y on the pad).</span></li>
-          <li><b>Camera</b><span>Follows from behind; drag to break free, C re-attaches.</span></li>
-          <li><b>Gamepad</b><span>Plug one in - same mapping as the real robot.</span></li>
-          <li><b>Ghosts</b><span>Other visitors right now appear as translucent ducks, live.</span></li>
-        </ul>
-        <button id="welcome-go">Waddle in</button>
         <div class="fineprint">click the title anytime to see this again</div>
       </div>
     </div>
