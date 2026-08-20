@@ -430,23 +430,19 @@
     </div>
 
     <script>
-      // Welcome modal: shown on first visit, dismissible by button, Escape
+      // Welcome modal: shown on every load, dismissible by button, Escape
       // or clicking the blurred backdrop. The top-left brand reopens it.
       (() => {
-        const SEEN_KEY = "md-welcome-seen";
         const modal = document.getElementById("welcome");
         const open = () => {
           modal.hidden = false;
           modal.classList.remove("closing");
         };
         const close = () => {
-          try { localStorage.setItem(SEEN_KEY, "1"); } catch {}
           modal.classList.add("closing");
           setTimeout(() => { modal.hidden = true; }, 380);
         };
-        let seen = false;
-        try { seen = localStorage.getItem(SEEN_KEY) === "1"; } catch {}
-        if (!seen) open();
+        open();
         document.getElementById("welcome-go").addEventListener("click", close);
         modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
         window.addEventListener("keydown", (e) => {
