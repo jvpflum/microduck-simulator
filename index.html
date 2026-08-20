@@ -552,6 +552,8 @@
           <span class="hint"><span class="key" id="key-pad-x">X</span> roll</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-y">Y</span> ball</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-rb">RB</span><span class="key" id="key-pad-lb">LB</span> kick</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-rs">RS</span> camera</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-r3">R3</span> chase</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-sit">&dArr;</span> sit</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-run">&uArr;</span> run</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-rt">RT</span> quack</span>
@@ -671,7 +673,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "29"; // bump on rl.js changes to defeat heuristic caching
+      const V = "30"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);

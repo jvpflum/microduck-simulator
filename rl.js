@@ -256,7 +256,10 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
-const padPrev = { x: false, y: false, rb: false, lb: false, dpadDown: false, dpadUp: false, rtArmed: true };
+const padPrev = { x: false, y: false, rb: false, lb: false, r3: false, dpadDown: false, dpadUp: false, rtArmed: true };
+// Right-stick camera state, read by renderStats before the gamepad
+// section below has evaluated (same reason as padCmd above).
+let padOrbitLive = false; // HUD: RS keycap lit while deflected
 // Declared before the control loop starts: buildObs reads it via
 // effectiveCmd on the very first control step.
 const held = new Set();
@@ -527,7 +530,7 @@ function makeInfiniteGrid() {
     uniforms: {
       uCell: { value: 0.1 },
       uSection: { value: 0.5 },
-      uCellColor: { value: new THREE.Color(0x7d7360) },
+      uCellColor: { value: new THREE.Color(0x8e8371) },
       uSectionColor: { value: new THREE.Color(0xffb366) },
       uFadeDist: { value: 3.0 },
       uFocus: { value: new THREE.Vector3() },
@@ -544,18 +547,24 @@ function makeInfiniteGrid() {
       varying vec3 vWorld;
       uniform float uCell, uSection, uFadeDist;
       uniform vec3 uCellColor, uSectionColor, uFocus;
+      // Tron-style line: a thicker antialiased core plus a faint, much
+      // wider halo added on top (squared falloff keeps it a whisper of a
+      // glow rather than a bloom wash).
       float gridLine(vec2 p, float size) {
         vec2 r = p / size;
         vec2 g = abs(fract(r - 0.5) - 0.5) / fwidth(r);
-        return 1.0 - min(min(g.x, g.y), 1.0);
+        float d = min(g.x, g.y);
+        float core = 1.0 - smoothstep(0.0, 1.8, d);
+        float halo = 1.0 - smoothstep(0.0, 7.0, d);
+        return core + halo * halo * 0.22;
       }
       void main() {
         float cell = gridLine(vWorld.xz, uCell);
         float section = gridLine(vWorld.xz, uSection);
         float d = distance(vWorld.xz, uFocus.xz);
         float fade = pow(clamp(1.0 - d / uFadeDist, 0.0, 1.0), 1.6);
-        vec3 col = mix(uCellColor, uSectionColor, section);
-        float alpha = max(section * 0.45, cell * 0.3) * fade;
+        vec3 col = mix(uCellColor, uSectionColor, clamp(section, 0.0, 1.0));
+        float alpha = min(max(section * 0.6, cell * 0.4) * fade, 1.0);
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
       }
@@ -580,7 +589,7 @@ function makeWallGridMaterial(alongX) {
     uniforms: {
       uCell: { value: 0.1 },
       uSection: { value: 0.5 },
-      uCellColor: { value: new THREE.Color(0x7d7360) },
+      uCellColor: { value: new THREE.Color(0x8e8371) },
       uSectionColor: { value: new THREE.Color(0xffb366) },
       // Gentler radial fade than the floor: the walls sit 1.5+ m from the
       // duck by construction and would vanish with the floor's 3 m fade.
@@ -601,10 +610,14 @@ function makeWallGridMaterial(alongX) {
       varying vec3 vWorld;
       uniform float uCell, uSection, uFadeDist, uWallH, uAlongX;
       uniform vec3 uCellColor, uSectionColor, uFocus;
+      // Same Tron-style core + faint halo as the floor grid.
       float gridLine(vec2 p, float size) {
         vec2 r = p / size;
         vec2 g = abs(fract(r - 0.5) - 0.5) / fwidth(r);
-        return 1.0 - min(min(g.x, g.y), 1.0);
+        float d = min(g.x, g.y);
+        float core = 1.0 - smoothstep(0.0, 1.8, d);
+        float halo = 1.0 - smoothstep(0.0, 7.0, d);
+        return core + halo * halo * 0.22;
       }
       void main() {
         // Wall surface coords: the in-plane horizontal world axis + height.
@@ -615,8 +628,8 @@ function makeWallGridMaterial(alongX) {
         float d = distance(vWorld.xz, uFocus.xz);
         float fade = pow(clamp(1.0 - d / uFadeDist, 0.0, 1.0), 1.6);
         float vert = 1.0 - clamp(vWorld.y / uWallH, 0.0, 1.0);
-        vec3 col = mix(uCellColor, uSectionColor, section);
-        float alpha = max(section * 0.7, cell * 0.45) * fade * (0.3 + 0.7 * vert);
+        vec3 col = mix(uCellColor, uSectionColor, clamp(section, 0.0, 1.0));
+        float alpha = min(max(section * 0.9, cell * 0.6) * fade * (0.3 + 0.7 * vert), 1.0);
         if (alpha < 0.004) discard;
         gl_FragColor = vec4(col, alpha);
       }
@@ -916,7 +929,8 @@ const keyEls = {
     padX: el("key-pad-x"), padSit: el("key-pad-sit"),
     padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
     padRb: el("key-pad-rb"), padLb: el("key-pad-lb"),
-    padY: el("key-pad-y"),
+    padY: el("key-pad-y"), padRs: el("key-pad-rs"),
+    padR3: el("key-pad-r3"),
   };
 const STICK_R = 15; // px, max dot travel inside the 46px stick circle
 let resetFlashAt = -Infinity;
@@ -961,6 +975,8 @@ function renderStats() {
   keyEls.padSit.classList.toggle("lit", sitting);
   keyEls.padRun.classList.toggle("lit", padPrev.dpadUp);
   keyEls.padRt.classList.toggle("lit", padJaw > 0.3);
+  keyEls.padRs.classList.toggle("lit", padOrbitLive); // while deflected
+  keyEls.padR3.classList.toggle("lit", chaseCam); // steady while chasing
 }
 
 // Real implementation assigned in the gamepad section below; the render
@@ -1024,18 +1040,62 @@ window.addEventListener("keyup", (e) => {
 window.addEventListener("blur", () => { held.clear(); refreshVelCmd(); });
 
 // ── Gamepad: same mapping as the robot runtime (microduck_runtime) ──────
-// Sticks: L vertical = vx (asymmetric fwd/back), L horizontal = strafe,
-// R horizontal = turn, all EMA-smoothed like the runtime's cmd_alpha.
-// X = roll, DpadDown = sit/stand, DpadUp = back to run, RT = mouth.
+// Left stick: vertical = vx (asymmetric fwd/back), horizontal = turn,
+// EMA-smoothed like the runtime's cmd_alpha. Right stick orbits the
+// camera (detaches the chase cam, R3 re-toggles it). X = roll, Y = ball,
+// RB/LB = kicks, DpadDown = sit/stand, DpadUp = back to run, RT = mouth.
 const PAD_DEADZONE = 0.15;
 const PAD_ALPHA = 0.12;
 const dz = (v) => (Math.abs(v) < PAD_DEADZONE ? 0 : v);
 
+// Right-stick camera orbit, in OrbitControls-compatible terms: rebuild
+// the camera-target offset as a spherical, nudge azimuth/elevation, and
+// re-place the camera. controls.update() then runs on the result, so the
+// damping bookkeeping never fights it (same trick as updateChaseCam).
+// The stick does not move the camera directly: it steers an angular
+// VELOCITY that eases toward the stick's target rate (frame-rate
+// independent exponential), so pushing ramps up gently and releasing
+// coasts to a stop over ~0.3 s instead of freezing on the spot.
+// Vertical is flight-style inverted by request: stick up orbits the
+// camera downward, stick down orbits it upward.
+const PAD_ORBIT_SPEED = 2.4; // rad/s at full deflection
+const PAD_ORBIT_SMOOTH = 8; // 1/s response rate (~95% in 0.37 s)
+const padOrbitVel = { az: 0, el: 0 }; // smoothed angular velocity, rad/s
+const _padSph = new THREE.Spherical();
+const _padOff = new THREE.Vector3();
+function padOrbitStep(rx, ry, dt) {
+  padOrbitLive = rx !== 0 || ry !== 0;
+  if (padOrbitLive) chaseCam = false; // detach, same as a mouse grab
+  const k = 1 - Math.exp(-PAD_ORBIT_SMOOTH * dt);
+  padOrbitVel.az += (rx * PAD_ORBIT_SPEED - padOrbitVel.az) * k;
+  // Inverted Y; elevation runs a touch slower, full-rate pitch is twitchy.
+  padOrbitVel.el += (-ry * PAD_ORBIT_SPEED * 0.75 - padOrbitVel.el) * k;
+  if (chaseCam) { padOrbitVel.az = 0; padOrbitVel.el = 0; return; }
+  if (Math.abs(padOrbitVel.az) < 1e-3 && Math.abs(padOrbitVel.el) < 1e-3) return;
+  _padOff.copy(camera.position).sub(controls.target);
+  _padSph.setFromVector3(_padOff);
+  // Stick right sweeps the camera right around the duck.
+  _padSph.theta -= padOrbitVel.az * dt;
+  _padSph.phi += padOrbitVel.el * dt;
+  _padSph.phi = Math.min(controls.maxPolarAngle, Math.max(0.08, _padSph.phi));
+  _padSph.makeSafe();
+  camera.position.setFromSpherical(_padSph).add(controls.target);
+  camera.lookAt(controls.target);
+}
+
+let padPollT = performance.now();
 pollPad = function pollGamepad() {
+  const now = performance.now();
+  // Clamped so a background-tab stall can't slingshot the camera.
+  const dt = Math.min((now - padPollT) / 1000, 0.05);
+  padPollT = now;
   const gp = [...(navigator.getGamepads?.() ?? [])].find((p) => p && p.connected);
   document.body.classList.toggle("pad-connected", !!gp);
   if (!gp) {
     if (padActive) { padActive = false; padCmd.fill(0); padJaw = 0; }
+    padOrbitLive = false;
+    padOrbitVel.az = 0;
+    padOrbitVel.el = 0;
     return;
   }
   // Left stick only: vertical = forward/back, horizontal = turn.
@@ -1056,6 +1116,15 @@ pollPad = function pollGamepad() {
     padActive = false;
     padCmd.fill(0);
   }
+
+  // Right stick: camera orbit with velocity smoothing. Runs every frame
+  // (not just while deflected) so a released stick coasts to a stop.
+  padOrbitStep(dz(gp.axes[2] ?? 0), dz(gp.axes[3] ?? 0), dt);
+
+  // R3 (right stick click): toggle the chase cam, gamepad twin of KeyC.
+  const r3Btn = !!gp.buttons[11]?.pressed;
+  if (r3Btn && !padPrev.r3) chaseCam = !chaseCam;
+  padPrev.r3 = r3Btn;
 
   // Standard mapping indices: X=2, Y=3, LB=4, RB=5, DpadDown=13, RT=7 (analog).
   const x = !!gp.buttons[2]?.pressed;
@@ -1239,6 +1308,7 @@ window.rl = {
   get ballQposAdr() { return ballQposAdr; },
   get chaseCam() { return chaseCam; },
   set chaseCam(v) { chaseCam = !!v; },
+  padOrbitStep,
   step: async (n = 1) => { for (let i = 0; i < n; i++) await controlStep(); },
   render: () => { syncRig(); renderer.render(scene, camera); },
   // One full render-loop iteration, for tests driving frames manually.

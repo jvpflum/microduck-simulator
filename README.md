@@ -46,6 +46,8 @@ area so neither the ball nor the duck can wander off.
 Plug in a controller and the same mapping as the real robot runtime applies:
 
 - Left stick: forward / back + turn
+- Right stick: orbit the camera (detaches the chase cam)
+- R3 (right stick click): toggle the chase cam back on
 - X: roll
 - Y: pop / respawn the ball
 - RB / LB: right / left kick
