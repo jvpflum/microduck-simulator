@@ -627,13 +627,27 @@ const CHASE_PITCH = 0.42; // rad above horizontal, keeps the floor in view
 const CHASE_EASE = 0.05; // exponential ease, cinematic on turns
 const _chasePos = new THREE.Vector3();
 const _chaseDir = new THREE.Vector3();
+// During one-shot rolls and kicks the trunk tumbles, so the yaw read from
+// its quaternion spins wildly and would whip the camera around. Lazily
+// latch the last healthy yaw while walking/sitting and hold it for the
+// whole one-shot; the position/target easing keeps following the trunk.
+// No timers needed: both one-shots deterministically hand back to walk,
+// and the camera position lerp absorbs the small heading correction when
+// live tracking resumes (rolls end facing roughly the same way).
+let chaseHeldYaw = 0;
 function updateChaseCam() {
   if (!chaseCam) return;
   const qpos = data.qpos;
-  const yaw = Math.atan2(
-    2 * (qpos[3] * qpos[6] + qpos[4] * qpos[5]),
-    1 - 2 * (qpos[5] * qpos[5] + qpos[6] * qpos[6]),
-  );
+  let yaw;
+  if (mode === "roll" || isKick()) {
+    yaw = chaseHeldYaw;
+  } else {
+    yaw = Math.atan2(
+      2 * (qpos[3] * qpos[6] + qpos[4] * qpos[5]),
+      1 - 2 * (qpos[5] * qpos[5] + qpos[6] * qpos[6]),
+    );
+    chaseHeldYaw = yaw;
+  }
   const dist = camera.position.distanceTo(controls.target);
   const horiz = dist * Math.cos(CHASE_PITCH);
   const vert = dist * Math.sin(CHASE_PITCH);
