@@ -711,9 +711,20 @@ function makeSoccerBallTexture() {
   // Seam half-width and anti-alias band, in radians of arc.
   const SEAM = (1.6 * Math.PI) / 180;
   const AA = (0.35 * Math.PI) / 180;
+  // Groove reach for the bump map: a touch wider than the painted seam so
+  // the recess shoulders catch light on both sides of the line.
+  const GROOVE = SEAM * 1.5;
   const BG = [233, 231, 224], INK = [23, 23, 29], STITCH = [200, 197, 188];
   const img = ctx.createImageData(W, H);
   const px = img.data;
+  // Height map sharing the same panel construction: seams become recessed
+  // grooves, plus a very fine leather/PVC grain over the whole surface.
+  const bc = document.createElement("canvas");
+  bc.width = W;
+  bc.height = H;
+  const bctx = bc.getContext("2d");
+  const bimg = bctx.createImageData(W, H);
+  const bpx = bimg.data;
   for (let row = 0; row < H; row++) {
     const lat = Math.PI / 2 - ((row + 0.5) / H) * Math.PI;
     const cl = Math.cos(lat), sl = Math.sin(lat);
@@ -739,25 +750,48 @@ function makeSoccerBallTexture() {
         px[o + ch] = base + (INK[ch] - base) * black;
       }
       px[o + 3] = 255;
+      // Bump: quadratic groove profile (soft shoulders, no golf-ball
+      // embossing) + grain noise.
+      const groove = Math.max(0, 1 - halfGap / GROOVE) ** 2;
+      const hgt = 205 - groove * 115 + (Math.random() - 0.5) * 14;
+      const h8 = Math.max(0, Math.min(255, hgt));
+      bpx[o] = h8; bpx[o + 1] = h8; bpx[o + 2] = h8;
+      bpx[o + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  // Texel footprints get extremely anamorphic near the UV poles; without
-  // anisotropy the cap edge visibly scallops at close range.
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  return tex;
+  bctx.putImageData(bimg, 0, 0);
+  const finish = (canvas, srgb) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    // The bump map stays linear; only the color map is sRGB.
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    // Texel footprints get extremely anamorphic near the UV poles; without
+    // anisotropy the cap edge visibly scallops at close range.
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return tex;
+  };
+  return { map: finish(c, true), bumpMap: finish(bc, false) };
 }
 // Same Z-up -> Y-up trick as the duck rig: the group takes the axis fix,
 // the mesh inside takes the raw MJCF free-joint pose.
 const ballGroup = new THREE.Group();
 ballGroup.rotation.x = -Math.PI / 2;
+const ballTex = makeSoccerBallTexture();
 const ballMesh = new THREE.Mesh(
   // 48x32 segments: the coarser default makes the UV interpolation near
   // the poles visibly scallop the round cap edge of the texture.
   new THREE.SphereGeometry(BALL_RADIUS, 48, 32),
-  new THREE.MeshStandardMaterial({ map: makeSoccerBallTexture(), roughness: 0.35, metalness: 0 }),
+  // Physical material for the waxed vintage-leather look: matte-ish base
+  // with a whisper of clearcoat so highlights ride the seam grooves.
+  new THREE.MeshPhysicalMaterial({
+    map: ballTex.map,
+    bumpMap: ballTex.bumpMap,
+    bumpScale: 0.0012,
+    metalness: 0,
+    roughness: 0.55,
+    clearcoat: 0.2,
+    clearcoatRoughness: 0.35,
+  }),
 );
 ballMesh.visible = false;
 ballGroup.add(ballMesh);
@@ -869,7 +903,7 @@ function syncRig() {
   for (const m of wallMats) m.uniforms.uFocus.value.copy(controls.target);
 }
 
-// Quack: a quick jaw flap on every mode/colour change. The jaw isn't a
+// Quack: jaw + chirp on the gamepad right trigger only. The jaw isn't a
 // MuJoCo joint (duck.js re-creates the hinge in JS), so this is purely
 // cosmetic and can't upset the policy. A held gamepad trigger drives the
 // jaw analogically on top (same as the robot's mouth trigger).
@@ -898,13 +932,12 @@ function playChirp() {
   a.currentTime = 0;
   a.play().catch(() => {});
 }
-// Silent jaw flap for mode/colour changes; the actual quack sound only
-// plays on the gamepad right trigger (anything more gets noisy fast).
-const quack = () => {
-  quackAt = performance.now();
-};
+// The jaw is driven ONLY by the dedicated gamepad triggers: the analog
+// RT/LT value (padJaw) plus the flap that accompanies the RT-edge quack
+// sound below. Mode changes, rolls, kicks and colour swaps no longer
+// move the mouth (the old silent flap was removed by user request).
 const quackLoud = () => {
-  quack();
+  quackAt = performance.now();
   playChirp();
 };
 function jawOpenNow() {
@@ -1178,7 +1211,6 @@ function setMode(next) {
   // return to walk - switching now would floor the duck.
   if ((mode === "roll" && rollRun) || (isKick() && kickRun)) return;
   clearModeTimers();
-  quack();
   rollRun = null;
   if (next !== "sit") {
     // Leaving a sit: let the sitstand policy stand the duck back up first.
@@ -1220,7 +1252,6 @@ function triggerRoll(source = "kb") {
   if (mode !== "walk" || standTimer) return;
   clearModeTimers();
   rollSource = source;
-  quack();
   mode = "roll";
   sitFlag = 0;
   rollRun = { steps: 0, tipped: false };
@@ -1235,7 +1266,6 @@ function triggerKick(foot, source = "kb") {
   if (mode !== "walk" || standTimer) return false;
   clearModeTimers();
   kickSource = source;
-  quack();
   mode = foot === "left" ? "kickL" : "kickR";
   sitFlag = 0;
   kickRun = { steps: 0 };
@@ -1280,7 +1310,6 @@ for (const name of VARIANT_NAMES) {
     if (name === currentVariant) return;
     currentVariant = name;
     applyVariant(rig, name);
-    quack();
     syncSwatches();
   });
   swatchesEl.appendChild(b);
@@ -1309,6 +1338,7 @@ window.rl = {
   get chaseCam() { return chaseCam; },
   set chaseCam(v) { chaseCam = !!v; },
   padOrbitStep,
+  jawOpenNow,
   step: async (n = 1) => { for (let i = 0; i < n; i++) await controlStep(); },
   render: () => { syncRig(); renderer.render(scene, camera); },
   // One full render-loop iteration, for tests driving frames manually.
