@@ -32,10 +32,14 @@ window.__hfSigned = signed; // duck.js uses it for kinematics + STL requests
 
 // Local modules are imported dynamically through signed() for the same
 // reason: a static import of ./duck.js would 401 without the cookie.
+// They also reuse rl.js's own ?v= cache-buster: python http.server (and
+// some CDN edges) send no Cache-Control, so without it browsers can keep
+// serving stale module bytes after a deploy.
+const SELF_V = new URL(import.meta.url).searchParams.get("v") ?? "0";
 const { buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION } =
-  await import(signed("./duck.js"));
+  await import(signed(`./duck.js?v=${SELF_V}`));
 const { VARIANTS, VARIANT_NAMES, materialHookFor, randomVariantName, applyVariant, specToHex } =
-  await import(signed("./variants.js"));
+  await import(signed(`./variants.js?v=${SELF_V}`));
 
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
 ort.env.wasm.numThreads = 1; // static hosting sends no COOP/COEP headers
@@ -700,14 +704,16 @@ function syncButtons() {
 }
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────
-// One representative colour per variant so the dots read at a glance.
+  // One representative colour per variant so the dots read at a glance.
+// Variants can force theirs with a `swatch` spec (purple does: its head
+// is warm gray but its identity is the purple accents).
 const SWATCH_SLOT = { classic: "feet", charcoal: "headDome", purple: "feet", blue: "facePlate" };
 const swatchesEl = document.getElementById("swatches");
 const swatchBtns = new Map();
 for (const name of VARIANT_NAMES) {
   const v = VARIANTS[name];
   const b = document.createElement("button");
-  b.style.background = specToHex(v[SWATCH_SLOT[name] ?? "bodyShell"]);
+  b.style.background = specToHex(v.swatch ?? v[SWATCH_SLOT[name] ?? "bodyShell"]);
   b.setAttribute("aria-label", `${name} colours`);
   b.addEventListener("click", () => {
     if (name === currentVariant) return;
@@ -744,10 +750,7 @@ window.rl = {
 // translucent ducks. Fire-and-forget: any failure just means no ghosts.
 const r3 = (x) => Math.round(x * 1000) / 1000;
 try {
-  // Same heuristic-cache pitfall as everything else served without
-  // Cache-Control: reuse rl.js's own ?v= so ghosts.js updates ship together.
-  const selfV = new URL(import.meta.url).searchParams.get("v") ?? "0";
-  const { initGhosts } = await import(signed(`./ghosts.js?v=${selfV}`));
+  const { initGhosts } = await import(signed(`./ghosts.js?v=${SELF_V}`));
   ghosts = await initGhosts({
     scene, rig, cloneRig, setJoint, setJawOpen, applyVariant,
     jointNames: JOINT_NAMES,

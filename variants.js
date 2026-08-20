@@ -37,76 +37,94 @@ const FEET_YELLOW = { color: [0.784, 0.455, 0.023], roughness: 0.5, metalness: 0
 
 // Slots (validated against the four-robot reference photo): headDome
 // (top shell), facePlate (around the eye), trim (band under the shell +
-// upper beak base), beakUpper (mouth-roof plate), beakLower (jaw plates),
-// eyeRing, lens, bodyShell (trunk shells), legShells (upper-leg shells),
-// feet (foot blocks + ankle brackets), soles, mechDark, mechGray.
+// upper beak base), beakUpper (mouth-roof plate), beakLower (rigid jaw),
+// tongue (soft pad inside the beak), eyeRing, lens, bodyShell (trunk
+// base), sideShells (left + right trunk shells), legShells (upper-leg
+// shells), feet (shoe upper: foot blocks + ankle brackets), soles (shoe
+// lower: sole pads), hips (hip covers), mechDark, mechGray.
+// The shoe is deliberately identical on all variants: yellow upper
+// (feet), orange lower (soles).
 export const VARIANTS = {
   // Front-center robot: warm gray head, cream body, amber eye, orange
-  // trim/upper beak over a lighter amber lower beak, amber-orange feet.
+  // trim and beak.
   classic: {
-    headDome: WARM_GRAY,
+    headDome: CREAM,
     facePlate: WARM_GRAY,
     trim: BRIGHT_ORANGE,
     beakUpper: BRIGHT_ORANGE,
-    beakLower: AMBER,
+    beakLower: BRIGHT_ORANGE,
+    tongue: AMBER_YELLOW,
     eyeRing: AMBER_YELLOW,
     lens: LENS,
     bodyShell: CREAM,
+    sideShells: CREAM,
     legShells: CREAM,
-    feet: AMBER_ORANGE,
+    feet: BRIGHT_ORANGE,
     soles: AMBER_ORANGE,
+    hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
   },
   // Front-left robot: charcoal shells, slightly lighter face plate,
-  // amber eye, orange/amber beak, yellow soles peeking under black feet.
+  // amber eye, orange/amber beak.
   charcoal: {
     headDome: CHARCOAL,
     facePlate: CHARCOAL_FACE,
     trim: BRIGHT_ORANGE,
     beakUpper: BRIGHT_ORANGE,
-    beakLower: AMBER,
+    beakLower: BRIGHT_ORANGE,
+    tongue: AMBER_YELLOW,
     eyeRing: AMBER_YELLOW,
     lens: LENS,
     bodyShell: CHARCOAL_BODY,
+    sideShells: CHARCOAL_BODY,
     legShells: CHARCOAL_BODY,
-    feet: CHARCOAL_BODY,
-    soles: CLEAN_YELLOW,
+    feet: BRIGHT_ORANGE,
+    soles: AMBER_ORANGE,
+    hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
   },
   // Back-center robot: light warm gray head, purple eye, YELLOW trim and
-  // beak (both plates), cream body, purple feet.
+  // beak (both plates), cream body.
   purple: {
     headDome: LIGHT_WARM_GRAY,
-    facePlate: LIGHT_WARM_GRAY,
+    facePlate: WARM_GRAY,
     trim: CLEAN_YELLOW,
     beakUpper: CLEAN_YELLOW,
     beakLower: CLEAN_YELLOW,
+    tongue: AMBER_YELLOW,
     eyeRing: PURPLE_RING,
     lens: LENS,
     bodyShell: CREAM,
+    sideShells: CREAM,
     legShells: CREAM,
-    feet: PURPLE_FEET,
-    soles: PURPLE_FEET,
+    feet: CLEAN_YELLOW,
+    soles: PURPLE_RING,
+    hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
+    // UI swatch override: the head is warm gray, but this colourway's
+    // identity is its purple accents - the picker dot shows that.
+    swatch: PURPLE_FEET,
   },
   // Right robot: pale blue dome over a medium blue face plate (two
-  // different blues), amber eye, orange/amber beak, blue-gray body,
-  // clean yellow feet.
+  // different blues), amber eye, orange/amber beak, blue-gray body.
   blue: {
     headDome: PALE_BLUE,
     facePlate: MEDIUM_BLUE,
     trim: BRIGHT_ORANGE,
     beakUpper: BRIGHT_ORANGE,
-    beakLower: AMBER,
+    beakLower: BRIGHT_ORANGE,
+    tongue: AMBER_YELLOW,
     eyeRing: AMBER_YELLOW,
     lens: LENS,
-    bodyShell: BLUE_GRAY,
-    legShells: BLUE_GRAY,
-    feet: FEET_YELLOW,
-    soles: FEET_YELLOW,
+    bodyShell: PALE_BLUE,
+    sideShells: PALE_BLUE,
+    legShells: PALE_BLUE,
+    feet: BRIGHT_ORANGE,
+    soles: AMBER_ORANGE,
+    hips: MEDIUM_BLUE,
     mechDark: DARK,
     mechGray: GRAY,
   },
@@ -131,17 +149,18 @@ export function meshMaterialsFor(v) {
     "noenoeil.stl": v.eyeRing,
     "lens.stl": v.lens,
     "m12_lens_holder.stl": v.mechDark,
-    // Beak: mouth-roof plate on top, rigid jaw + soft pad below.
+    // Beak: mouth-roof plate on top, rigid jaw below, soft pad (the
+    // tongue) riding on the jaw.
     "soft_mouth_top.stl": v.beakUpper,
     "jaw.stl": v.beakLower,
-    "jaw_soft.stl": v.beakLower,
-    // Body shells
+    "jaw_soft.stl": v.tongue,
+    // Body: trunk base + the two side shells (shared slot).
     "trunk_base.stl": v.bodyShell,
-    "left_shell.stl": v.bodyShell,
-    "right_shell.stl": v.bodyShell,
+    "left_shell.stl": v.sideShells,
+    "right_shell.stl": v.sideShells,
     "upper_leg_left.stl": v.legShells,
     "upper_leg_right.stl": v.legShells,
-    "hip_l.stl": v.trim,
+    "hip_l.stl": v.hips,
     // Feet: foot block + ankle bracket, soft sole pad below.
     "foot_left.stl": v.feet,
     "foot_right.stl": v.feet,
@@ -149,8 +168,17 @@ export function meshMaterialsFor(v) {
     "ankle_right.stl": v.feet,
     "sole_left.stl": v.soles,
     "sole_right.stl": v.soles,
-    // Dark mechanics
+    // Dark mechanics. leg.stl is the printed shin that wraps the ankle
+    // motor and its bearing ring: in gray they read as two gray motors,
+    // so both go dark with the motor they hold.
     "xl330.stl": v.mechDark,
+    "leg.stl": v.mechDark,
+    "seeed_bearing__configuration_default.stl": v.mechDark,
+    // Hip yaw mechanism (ribbed ring + 4-screw plate): reads as the hip
+    // motor, so it goes dark too. The printed hip cover (hip_l.stl)
+    // keeps the dedicated `hips` slot.
+    "yaw2roll.stl": v.mechDark,
+    "bearing_roll.stl": v.mechDark,
     "neck.stl": v.mechDark,
     "np_f970.stl": v.mechDark,
     "pcb__raspberry_pi_zero_2_w.stl": v.mechDark,
@@ -159,15 +187,11 @@ export function meshMaterialsFor(v) {
     "speaker.stl": v.mechDark,
     // Gray mechanics
     "upper_leg_rigidity_plate.stl": v.mechGray,
-    "leg.stl": v.mechGray,
-    "yaw2roll.stl": v.mechGray,
     "yaw_roll_motion.stl": v.mechGray,
     "neck_pitch.stl": v.mechGray,
-    "bearing_roll.stl": v.mechGray,
     "motor_support.stl": v.mechGray,
     "power_support.stl": v.mechGray,
     "seeed_bearing__configuration__22x16x4.stl": v.mechGray,
-    "seeed_bearing__configuration_default.stl": v.mechGray,
   };
 }
 
