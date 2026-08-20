@@ -32,7 +32,7 @@ window.__hfSigned = signed; // duck.js uses it for kinematics + STL requests
 
 // Local modules are imported dynamically through signed() for the same
 // reason: a static import of ./duck.js would 401 without the cookie.
-const { buildRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION } =
+const { buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION } =
   await import(signed("./duck.js"));
 const { VARIANTS, VARIANT_NAMES, materialHookFor, randomVariantName, applyVariant, specToHex } =
   await import(signed("./variants.js"));
@@ -466,10 +466,13 @@ const quack = () => {
   quackSound.currentTime = 0;
   quackSound.play().catch(() => {});
 };
-function syncJaw() {
+function jawOpenNow() {
   const t = (performance.now() - quackAt) / QUACK_MS;
   const flap = t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0;
-  setJawOpen(rig, Math.max(flap, padJaw));
+  return Math.max(flap, padJaw);
+}
+function syncJaw() {
+  setJawOpen(rig, jawOpenNow());
 }
 
 // HUD elements for the mini command sticks + hint highlighting.
@@ -491,8 +494,10 @@ function renderStats() {
   const [vx, vy, wz] = effectiveCmd();
   // The active policy lives in the big center label and the twist in the
   // mini sticks; up here only the bare telemetry remains.
+  const peers = ghosts?.peerCount() ?? 0;
   statsEl.textContent =
-    `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s`;
+    `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s` +
+    (peers ? ` \u00b7 ${peers + 1} online` : "");
 
   // Mini sticks: the dot mirrors the effective twist, lit yellow while the
   // user is actually driving.
@@ -520,12 +525,15 @@ function renderStats() {
 // Real implementation assigned in the gamepad section below; the render
 // loop starts before that section has evaluated, hence the indirection.
 let pollPad = () => {};
+// Multiplayer ghosts, initialised asynchronously at the end of the module.
+let ghosts = null;
 
 function loop() {
   requestAnimationFrame(loop);
   pollPad();
   syncRig();
   syncJaw();
+  ghosts?.update();
   controls.update();
   renderStats();
   renderer.render(scene, camera);
@@ -728,4 +736,34 @@ window.rl = {
   velCmd, lastAction, resetSim,
   step: async (n = 1) => { for (let i = 0; i < n; i++) await controlStep(); },
   render: () => { syncRig(); renderer.render(scene, camera); },
+  get ghosts() { return ghosts; },
 };
+
+// ── Multiplayer ghosts (WebRTC, serverless signaling) ───────────────────
+// Broadcast this duck's pose and render up to 3 other visitors live as
+// translucent ducks. Fire-and-forget: any failure just means no ghosts.
+const r3 = (x) => Math.round(x * 1000) / 1000;
+try {
+  // Same heuristic-cache pitfall as everything else served without
+  // Cache-Control: reuse rl.js's own ?v= so ghosts.js updates ship together.
+  const selfV = new URL(import.meta.url).searchParams.get("v") ?? "0";
+  const { initGhosts } = await import(signed(`./ghosts.js?v=${selfV}`));
+  ghosts = await initGhosts({
+    scene, rig, cloneRig, setJoint, setJawOpen, applyVariant,
+    jointNames: JOINT_NAMES,
+    getLocalState: () => {
+      const qpos = data.qpos;
+      const j = new Array(NUM_JOINTS);
+      for (let i = 0; i < NUM_JOINTS; i++) j[i] = r3(qpos[qposAdr[i]]);
+      return {
+        p: [r3(qpos[0]), r3(qpos[1]), r3(qpos[2]), r3(qpos[3]), r3(qpos[4]), r3(qpos[5]), r3(qpos[6])],
+        j,
+        w: r3(jawOpenNow()),
+        v: currentVariant,
+      };
+    },
+  });
+} catch (e) {
+  window.__ghostErr = String((e && e.stack) || e);
+  console.warn("ghosts disabled:", e);
+}
