@@ -79,6 +79,13 @@ const CTRL_DT = TIMESTEP * DECIMATION; // 50 Hz
 // Velocity command limits, same as infer_policy.py's keyboard mapping.
 const VEL_FWD = 0.25, VEL_BACK = -0.2, VEL_LAT = 0.2, VEL_ANG = 1.0;
 
+// Kickable ball: radius, parking spot (far away = hidden by default) and
+// the distance past which the respawn watchdog brings it back (the grid
+// fades out at 3 m, so a ball beyond that is invisible anyway).
+const BALL_RADIUS = 0.05;
+const BALL_PARK_POS = "50 0 0.05";
+const BALL_MAX_DIST = 3.0;
+
 const mount = document.getElementById("scene");
 const loadingEl = document.getElementById("loading");
 const hudEl = document.getElementById("hud");
@@ -137,11 +144,32 @@ async function buildPhysicsXml() {
   doc.querySelector("worldbody").appendChild(
     el("geom", { name: "floor", type: "plane", size: "0 0 0.05", pos: "0 0 0" }),
   );
-  // STAND keyframe from mjlab's scene_walk.xml (STAND2 pose).
+  // Kickable ball: a light free sphere (beach-ball feel). MuJoCo has no
+  // restitution parameter - the bounce comes from solref damping < 1, and
+  // the rolling-friction term makes it come to rest. Default contype /
+  // conaffinity (1) collide with the floor and the duck's collision-class
+  // geoms; the self_collision_only class (contype=2) correctly ignores it.
+  // Appended AFTER the robot body so the trunk freejoint stays first in
+  // qpos: qpos[0..6] indexing is hardcoded in syncRig, the fall watchdog
+  // and the ghosts' getLocalState.
+  const ballBody = el("body", { name: "ball", pos: BALL_PARK_POS });
+  ballBody.appendChild(el("freejoint", { name: "ball_freejoint" }));
+  ballBody.appendChild(el("geom", {
+    name: "ball_geom", type: "sphere", size: String(BALL_RADIUS),
+    mass: "0.03", friction: "0.4 0.01 0.003", solref: "0.03 0.4",
+  }));
+  doc.querySelector("worldbody").appendChild(ballBody);
+  // STAND keyframe from mjlab's scene_walk.xml (STAND2 pose). The ball's
+  // 7 free-joint values MUST be appended or nq (21 + 7 = 28) won't match
+  // and the model won't compile; parked 50 m away = effectively absent.
   const qposFree = "0 0 0.12 1 0 0 0";
   const pose14 = Array.from(DEFAULT_POSE).join(" ");
   const kf = doc.createElement("keyframe");
-  kf.appendChild(el("key", { name: "STAND", qpos: `${qposFree} ${pose14}`, ctrl: pose14 }));
+  kf.appendChild(el("key", {
+    name: "STAND",
+    qpos: `${qposFree} ${pose14} ${BALL_PARK_POS} 1 0 0 0`,
+    ctrl: pose14,
+  }));
   root.appendChild(kf);
   const meshFiles = [...doc.querySelectorAll("asset > mesh")].map((m) => m.getAttribute("file"));
   return { xml: new XMLSerializer().serializeToString(doc), meshFiles };
@@ -194,6 +222,8 @@ const dofAdr = JOINT_NAMES.map((n) => model.jnt(n).dofadr);
 const gyroAdr = model.sensor("imu_ang_vel").adr;
 const trunkId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, "trunk_base");
 const standKeyId = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY.value, "STAND");
+const ballQposAdr = model.jnt("ball_freejoint").qposadr;
+const ballDofAdr = model.jnt("ball_freejoint").dofadr;
 
 let uiReady = false;
 const lastAction = new Float32Array(NUM_JOINTS);
@@ -204,7 +234,7 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
-const padPrev = { x: false, rb: false, lb: false, dpadDown: false, dpadUp: false, rtArmed: true };
+const padPrev = { x: false, y: false, rb: false, lb: false, dpadDown: false, dpadUp: false, rtArmed: true };
 // Declared before the control loop starts: buildObs reads it via
 // effectiveCmd on the very first control step.
 const held = new Set();
@@ -212,6 +242,9 @@ const held = new Set();
 let mode = "walk"; // "walk" | "sitstand" | "roll" | "kickL" | "kickR"
 let sitFlag = 0;
 const isKick = () => mode === "kickL" || mode === "kickR";
+// Local-only kickable ball: false while parked at the keyframe spot
+// (mesh hidden), true once popped in front of the duck.
+let ballActive = false;
 
 // The twist the policy actually receives: live gamepad sticks win over the
 // held keys. No input means zero command - the duck stands in place.
@@ -257,10 +290,39 @@ function resetSim() {
   mujoco.mj_forward(model, data);
   lastAction.fill(0);
   sitFlag = 0;
+  // The keyframe re-parks the ball 50 m away; reflect that in the flag
+  // so the render loop hides the mesh again.
+  ballActive = false;
   // Buttons reflect sitFlag; keep them honest after auto-resets.
   if (uiReady) syncButtons();
 }
 resetSim();
+
+// Pop / respawn the ball ~0.35 m in front of the duck, with a small
+// random heading + distance jitter so repeated pops land somewhere
+// nearby instead of always on the same spot. qvel is zeroed so a respawn
+// doesn't carry the old momentum.
+function spawnBall() {
+  const qpos = data.qpos, qvel = data.qvel;
+  // Trunk yaw from the free-joint quaternion (qpos[3..6] = w x y z);
+  // the duck walks toward its local +X.
+  const yaw = Math.atan2(
+    2 * (qpos[3] * qpos[6] + qpos[4] * qpos[5]),
+    1 - 2 * (qpos[5] * qpos[5] + qpos[6] * qpos[6]),
+  );
+  const heading = yaw + (Math.random() - 0.5) * 0.7;
+  const dist = 0.35 + (Math.random() - 0.5) * 0.1;
+  qpos[ballQposAdr] = qpos[0] + Math.cos(heading) * dist;
+  qpos[ballQposAdr + 1] = qpos[1] + Math.sin(heading) * dist;
+  qpos[ballQposAdr + 2] = BALL_RADIUS + 0.02;
+  qpos[ballQposAdr + 3] = 1;
+  qpos[ballQposAdr + 4] = 0;
+  qpos[ballQposAdr + 5] = 0;
+  qpos[ballQposAdr + 6] = 0;
+  for (let i = 0; i < 6; i++) qvel[ballDofAdr + i] = 0;
+  mujoco.mj_forward(model, data);
+  ballActive = true;
+}
 
 // ── Observation ─────────────────────────────────────────────────────────
 const _q = new THREE.Quaternion();
@@ -322,6 +384,16 @@ async function controlStep() {
     if (now - fallenSince > graceMs) { resetSim(); fallenSince = null; }
   } else {
     fallenSince = null;
+  }
+
+  // Ball respawn watchdog: a kicked ball that wandered past the grid's
+  // fade distance is invisible and unreachable - bring it back near
+  // the duck. Re-read qpos: resetSim above may have re-parked the ball.
+  if (ballActive) {
+    const q = data.qpos;
+    const dx = q[ballQposAdr] - q[0];
+    const dy = q[ballQposAdr + 1] - q[1];
+    if (dx * dx + dy * dy > BALL_MAX_DIST * BALL_MAX_DIST) spawnBall();
   }
 
   // One-shot roll, step-counted like the robot runtime (a single roll is
@@ -462,12 +534,86 @@ const rig = await rigPromise;
 scene.add(rig.placer);
 const trunkGroup = rig.bodies.get("trunk_base");
 
+// Beach-ball look: alternating longitude panels drawn on a small canvas
+// and wrapped around the sphere (equirectangular UVs), so the rolling
+// actually reads visually. Colours match the dark scene + yellow accents.
+function makeBeachBallTexture() {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 256;
+  const ctx = c.getContext("2d");
+  const panels = ["#ffd23f", "#efe9dc", "#22222c", "#efe9dc", "#ffd23f", "#efe9dc", "#22222c", "#efe9dc"];
+  const w = c.width / panels.length;
+  for (let i = 0; i < panels.length; i++) {
+    ctx.fillStyle = panels[i];
+    ctx.fillRect(Math.floor(i * w), 0, Math.ceil(w) + 1, c.height);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+// Same Z-up -> Y-up trick as the duck rig: the group takes the axis fix,
+// the mesh inside takes the raw MJCF free-joint pose.
+const ballGroup = new THREE.Group();
+ballGroup.rotation.x = -Math.PI / 2;
+const ballMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(BALL_RADIUS, 32, 24),
+  new THREE.MeshStandardMaterial({ map: makeBeachBallTexture(), roughness: 0.35, metalness: 0 }),
+);
+ballMesh.visible = false;
+ballGroup.add(ballMesh);
+scene.add(ballGroup);
+
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.minDistance = 0.25;
 controls.maxDistance = 3;
 controls.maxPolarAngle = Math.PI / 2 - 0.03;
+
+// Chase cam (default ON): each frame the camera eases toward a point
+// behind the duck's heading at the current orbit distance, while the
+// orbit target keeps easing to the trunk in syncRig. Implemented by
+// overwriting camera.position AFTER controls.update() so we never fight
+// OrbitControls' own spherical bookkeeping; the wheel still zooms in
+// chase mode because the behind-point distance is re-read from the live
+// camera-target distance every frame.
+// Detach: any pointer grab on the canvas (drag start) drops back to the
+// free orbit-follow. We listen on pointerdown rather than the controls'
+// "start" event because in this three.js version the wheel dispatches
+// "start" too, and scroll-to-zoom must not detach the chase.
+let chaseCam = true;
+const CHASE_PITCH = 0.42; // rad above horizontal, keeps the floor in view
+const CHASE_EASE = 0.05; // exponential ease, cinematic on turns
+const _chasePos = new THREE.Vector3();
+const _chaseDir = new THREE.Vector3();
+function updateChaseCam() {
+  if (!chaseCam) return;
+  const qpos = data.qpos;
+  const yaw = Math.atan2(
+    2 * (qpos[3] * qpos[6] + qpos[4] * qpos[5]),
+    1 - 2 * (qpos[5] * qpos[5] + qpos[6] * qpos[6]),
+  );
+  const dist = camera.position.distanceTo(controls.target);
+  const horiz = dist * Math.cos(CHASE_PITCH);
+  const vert = dist * Math.sin(CHASE_PITCH);
+  // Duck forward in MJCF is (cos yaw, sin yaw, 0); Z-up -> Y-up maps it
+  // to three-space (cos yaw, 0, -sin yaw). Behind = minus that.
+  _chasePos.set(
+    controls.target.x - Math.cos(yaw) * horiz,
+    controls.target.y + vert,
+    controls.target.z + Math.sin(yaw) * horiz,
+  );
+  camera.position.lerp(_chasePos, CHASE_EASE);
+  // Re-project onto the orbit sphere: lerping between two points at the
+  // same radius cuts the chord, which would slowly zoom the camera in
+  // during large swings (e.g. re-attaching after the duck turned around).
+  _chaseDir.copy(camera.position).sub(controls.target);
+  const len = _chaseDir.length();
+  if (len > 1e-6) camera.position.copy(controls.target).addScaledVector(_chaseDir, dist / len);
+  camera.lookAt(controls.target);
+}
+renderer.domElement.addEventListener("pointerdown", () => { chaseCam = false; });
 
 function resize() {
   const w = mount.clientWidth, h = mount.clientHeight;
@@ -487,6 +633,14 @@ function syncRig() {
   trunkGroup.position.set(qpos[0], qpos[1], qpos[2]);
   trunkGroup.quaternion.set(qpos[4], qpos[5], qpos[6], qpos[3]);
   for (let j = 0; j < NUM_JOINTS; j++) setJoint(rig, JOINT_NAMES[j], qpos[qposAdr[j]]);
+  // Ball: raw MJCF pose inside the Z-up group, hidden while parked.
+  ballMesh.visible = ballActive;
+  if (ballActive) {
+    ballMesh.position.set(qpos[ballQposAdr], qpos[ballQposAdr + 1], qpos[ballQposAdr + 2]);
+    ballMesh.quaternion.set(
+      qpos[ballQposAdr + 4], qpos[ballQposAdr + 5], qpos[ballQposAdr + 6], qpos[ballQposAdr + 3],
+    );
+  }
   // Follow cam: ease the orbit target toward the trunk and translate the
   // camera by the same delta, so the camera-to-duck distance and viewing
   // angle stay constant while the duck walks. Mouse orbit/zoom still work:
@@ -556,12 +710,16 @@ const keyEls = {
   turnl: el("key-turnl"), turnr: el("key-turnr"),
   left: el("key-left"), right: el("key-right"),
     roll: el("key-roll"), reset: el("key-reset"), kick: el("key-kick"),
+    ball: el("key-ball"), cam: el("key-cam"),
     padX: el("key-pad-x"), padSit: el("key-pad-sit"),
     padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
     padRb: el("key-pad-rb"), padLb: el("key-pad-lb"),
+    padY: el("key-pad-y"),
   };
 const STICK_R = 15; // px, max dot travel inside the 46px stick circle
 let resetFlashAt = -Infinity;
+let ballFlashAt = -Infinity;
+let padYFlashAt = -Infinity;
 
 function renderStats() {
   const [vx, vy, wz] = effectiveCmd();
@@ -590,7 +748,10 @@ function renderStats() {
   keyEls.roll.classList.toggle("lit", mode === "roll" && rollSource === "kb");
   keyEls.kick.classList.toggle("lit", isKick() && kickSource === "kb");
   keyEls.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
+  keyEls.ball.classList.toggle("lit", performance.now() - ballFlashAt < 400);
+  keyEls.cam.classList.toggle("lit", chaseCam); // steady while chasing
   keyEls.padX.classList.toggle("lit", mode === "roll" && rollSource === "pad");
+  keyEls.padY.classList.toggle("lit", performance.now() - padYFlashAt < 400);
   keyEls.padRb.classList.toggle("lit", mode === "kickR" && kickSource === "pad");
   keyEls.padLb.classList.toggle("lit", mode === "kickL" && kickSource === "pad");
   keyEls.padSit.classList.toggle("lit", sitting);
@@ -611,6 +772,7 @@ function loop() {
   syncJaw();
   ghosts?.update();
   controls.update();
+  updateChaseCam();
   renderStats();
   renderer.render(scene, camera);
 }
@@ -640,6 +802,8 @@ let kickNextLeft = false;
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyR") { resetSim(); resetFlashAt = performance.now(); return; }
+  if (e.code === "KeyB") { spawnBall(); ballFlashAt = performance.now(); return; }
+  if (e.code === "KeyC") { chaseCam = !chaseCam; return; }
   if (e.code === "Space") { e.preventDefault(); triggerRoll(); return; }
   if (e.code === "KeyF") {
     e.preventDefault();
@@ -692,10 +856,15 @@ pollPad = function pollGamepad() {
     padCmd.fill(0);
   }
 
-  // Standard mapping indices: X=2, LB=4, RB=5, DpadDown=13, RT=7 (analog).
+  // Standard mapping indices: X=2, Y=3, LB=4, RB=5, DpadDown=13, RT=7 (analog).
   const x = !!gp.buttons[2]?.pressed;
   if (x && !padPrev.x) triggerRoll("pad");
   padPrev.x = x;
+
+  // Y: pop / respawn the ball, same rising-edge pattern as X.
+  const y = !!gp.buttons[3]?.pressed;
+  if (y && !padPrev.y) { spawnBall(); padYFlashAt = performance.now(); }
+  padPrev.y = y;
 
   // RB / LB: right / left kick, same buttons as the robot runtime.
   const rb = !!gp.buttons[5]?.pressed;
@@ -857,13 +1026,20 @@ uiReady = true;
 // Deterministic hooks for automated verification (rAF pauses in
 // background tabs, and the control loop is async).
 window.rl = {
-  model, data, mujoco,
+  model, data, mujoco, camera, controls,
   get mode() { return mode; },
   get sitFlag() { return sitFlag; },
   buildObs, cmd,
   velCmd, lastAction, resetSim,
+  spawnBall,
+  get ballActive() { return ballActive; },
+  get ballQposAdr() { return ballQposAdr; },
+  get chaseCam() { return chaseCam; },
+  set chaseCam(v) { chaseCam = !!v; },
   step: async (n = 1) => { for (let i = 0; i < n; i++) await controlStep(); },
   render: () => { syncRig(); renderer.render(scene, camera); },
+  // One full render-loop iteration, for tests driving frames manually.
+  frame: () => { syncRig(); syncJaw(); controls.update(); updateChaseCam(); renderStats(); renderer.render(scene, camera); },
   get ghosts() { return ghosts; },
 };
 

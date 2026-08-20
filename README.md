@@ -33,9 +33,14 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 - A / E: strafe
 - Space: roll (one barrel roll, then back to running)
 - F: kick, alternating feet
+- B: pop / respawn a kickable ball in front of the duck
+- C: toggle the chase camera (on by default; dragging detaches it)
 - R: reset
 - Drag to orbit, scroll to zoom
 - Colour dots: repaint the duck (it quacks)
+
+The ball is local-only: it lives in your tab's physics and is not shared
+with the multiplayer ghosts.
 
 ### Gamepad
 
@@ -44,6 +49,7 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 - Left stick: forward / back + strafe
 - Right stick: turn
 - X: roll
+- Y: pop / respawn the ball
 - RB / LB: right / left kick
 - D-pad down: sit / stand toggle
 - Right trigger: mouth (analog) + quack
