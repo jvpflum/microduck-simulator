@@ -17,10 +17,25 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { buildRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION } from "./duck.js";
-import { VARIANTS, VARIANT_NAMES, materialHookFor, randomVariantName, applyVariant, specToHex } from "./variants.js";
 import loadMujoco from "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@3.11.0/mujoco.js";
 import * as ort from "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.mjs";
+
+// Private HF Space auth: the hub iframe URL carries a ?__sign JWT, but
+// subresource requests normally rely on a *.static.hf.space cookie that
+// browsers often block inside the iframe (third-party cookie blocking),
+// which 401s every same-origin fetch. Appending the JWT to each request
+// authenticates them regardless of cookie policy. No-op locally.
+const HF_SIGN = new URLSearchParams(location.search).get("__sign");
+const signed = (url) =>
+  HF_SIGN ? `${url}${url.includes("?") ? "&" : "?"}__sign=${encodeURIComponent(HF_SIGN)}` : url;
+window.__hfSigned = signed; // duck.js uses it for kinematics + STL requests
+
+// Local modules are imported dynamically through signed() for the same
+// reason: a static import of ./duck.js would 401 without the cookie.
+const { buildRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION } =
+  await import(signed("./duck.js"));
+const { VARIANTS, VARIANT_NAMES, materialHookFor, randomVariantName, applyVariant, specToHex } =
+  await import(signed("./variants.js"));
 
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
 ort.env.wasm.numThreads = 1; // static hosting sends no COOP/COEP headers
@@ -94,7 +109,7 @@ const traced = (label, p) => {
 // Stripping them means the MuJoCo VFS only needs the ~10 meshes referenced
 // by collision geoms.
 async function buildPhysicsXml() {
-  const src = await (await fetch(`${MODEL_DIR}/robot_allcollisions.xml`)).text();
+  const src = await (await fetch(signed(`${MODEL_DIR}/robot_allcollisions.xml`))).text();
   const doc = new DOMParser().parseFromString(src, "text/xml");
   for (const g of [...doc.querySelectorAll('geom[class="visual"]')]) g.remove();
   const usedMeshes = new Set(
@@ -138,7 +153,7 @@ await Promise.all(
   meshFiles.map(async (f) => {
     // Same cache-busted URL as duck.js so the browser reuses the render
     // meshes instead of downloading the collision subset a second time.
-    const buf = await (await fetch(`${MODEL_DIR}/meshes/${f}?v=${MESH_VERSION}`, { cache: "force-cache" })).arrayBuffer();
+    const buf = await (await fetch(signed(`${MODEL_DIR}/meshes/${f}?v=${MESH_VERSION}`), { cache: "force-cache" })).arrayBuffer();
     // meshdir="assets" in the MJCF, so the compiler looks up "assets/<f>".
     vfs.addBuffer(`assets/${f}`, new Uint8Array(buf));
   }),
@@ -151,9 +166,9 @@ const rigPromise = (async () => {
 })();
 const sessionOpts = { executionProviders: ["wasm"] };
 [sessions.walk, sessions.sitstand, sessions.roulade] = await Promise.all([
-  ort.InferenceSession.create(POLICIES.walk, sessionOpts),
-  ort.InferenceSession.create(POLICIES.sitstand, sessionOpts),
-  ort.InferenceSession.create(POLICIES.roulade, sessionOpts),
+  ort.InferenceSession.create(signed(POLICIES.walk), sessionOpts),
+  ort.InferenceSession.create(signed(POLICIES.sitstand), sessionOpts),
+  ort.InferenceSession.create(signed(POLICIES.roulade), sessionOpts),
 ]);
 
 setLoading("Compiling physics\u2026");

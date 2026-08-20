@@ -19,6 +19,11 @@ export const MESH_VERSION = "8";
 // targets them.
 export const MODEL_DIR = "./robot/mjlab";
 
+// On a private HF Space, rl.js installs a URL signer that appends the
+// ?__sign JWT to same-origin requests (auth cookies may be blocked in the
+// hub iframe). Identity everywhere else.
+const signed = (url) => (window.__hfSigned ? window.__hfSigned(url) : url);
+
 // Meshes fully occluded inside the shells at every demo camera angle,
 // verified empirically by per-mesh pixel-diff (front 3/4, back, low
 // front close-up): hiding each changes exactly 0 pixels. Skipped at
@@ -29,7 +34,7 @@ const HIDDEN_MESHES = new Set([]);
 export async function loadKinematics(url) {
   // Same cache-buster as the STLs: force-cache would otherwise keep
   // serving a stale kinematics.json after the mesh list changes.
-  const r = await fetch(`${url}?v=${MESH_VERSION}`, { cache: "force-cache" });
+  const r = await fetch(signed(`${url}?v=${MESH_VERSION}`), { cache: "force-cache" });
   if (!r.ok) throw new Error(`kinematics fetch ${r.status}`);
   const k = await r.json();
   // Full-resolution meshes by default (the reduction will be redone
@@ -75,7 +80,7 @@ export async function buildRig(k, opts = {}) {
     if (!meshCache.has(name)) {
       meshCache.set(
         name,
-        loader.loadAsync(`${k.mesh_dir}/${name}?v=${MESH_VERSION}`).then((raw) => {
+        loader.loadAsync(signed(`${k.mesh_dir}/${name}?v=${MESH_VERSION}`)).then((raw) => {
           raw.deleteAttribute("normal");
           const welded = mergeVertices(raw, 1e-4);
           welded.scale(1000, 1000, 1000);

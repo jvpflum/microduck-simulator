@@ -178,6 +178,13 @@
         }
       }
     </script>
-    <script type="module" src="./rl.js"></script>
+    <!-- rl.js is imported dynamically with the private-space ?__sign JWT
+         appended: a plain src attribute can 401 when the browser blocks the
+         *.static.hf.space auth cookie inside the hub iframe. -->
+    <script type="module">
+      const sign = new URLSearchParams(location.search).get("__sign");
+      const suffix = sign ? `?__sign=${encodeURIComponent(sign)}` : "";
+      import(`./rl.js${suffix}`);
+    </script>
   </body>
 </html>
