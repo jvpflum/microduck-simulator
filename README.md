@@ -20,6 +20,7 @@ runs the policy network at 50 Hz. No server, no backend.
 | Run | `BEST_alpha_walking.onnx` | Velocity-tracking locomotion (arrows / WASD to steer) |
 | Sit | `BEST_alpha_sitstand.onnx` | Sits down on its hull, stands back up |
 | Roll | `roulade.onnx` | Rolls over and recovers |
+| Kick | `ball_kick_left.onnx` / `ball_kick_right.onnx` | Blind one-shot kick (0.5 s window, zeroed commands), left or right leg |
 
 Policies and MJCF model from
 [apirrone/microduck_runtime](https://github.com/apirrone/microduck_runtime)
@@ -31,6 +32,7 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 - Arrow left / right: turn
 - A / E: strafe
 - Space: roll (one barrel roll, then back to running)
+- F: kick, alternating feet
 - R: reset
 - Drag to orbit, scroll to zoom
 - Colour dots: repaint the duck (it quacks)
@@ -42,6 +44,7 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 - Left stick: forward / back + strafe
 - Right stick: turn
 - X: roll
+- RB / LB: right / left kick
 - D-pad down: sit / stand toggle
 - Right trigger: mouth (analog) + quack
 

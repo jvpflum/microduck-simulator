@@ -49,6 +49,10 @@ const POLICIES = {
   walk: `${POLICY_DIR}/BEST_alpha_walking.onnx`,
   sitstand: `${POLICY_DIR}/BEST_alpha_sitstand.onnx`,
   roll: `${POLICY_DIR}/roulade.onnx`,
+  // Blind one-shot kicks (the operator aims the robot, no ball in obs):
+  // the runtime swaps these in for a 0.5 s window, commands zeroed.
+  kickL: `${POLICY_DIR}/ball_kick_left.onnx`,
+  kickR: `${POLICY_DIR}/ball_kick_right.onnx`,
 };
 
 // From the ONNX metadata (identical for all alpha policies) and the STAND
@@ -169,11 +173,14 @@ const rigPromise = (async () => {
   return buildRig(k, { materialForMesh: materialHookFor(VARIANTS[currentVariant]) });
 })();
 const sessionOpts = { executionProviders: ["wasm"] };
-[sessions.walk, sessions.sitstand, sessions.roll] = await Promise.all([
-  ort.InferenceSession.create(signed(POLICIES.walk), sessionOpts),
-  ort.InferenceSession.create(signed(POLICIES.sitstand), sessionOpts),
-  ort.InferenceSession.create(signed(POLICIES.roll), sessionOpts),
-]);
+[sessions.walk, sessions.sitstand, sessions.roll, sessions.kickL, sessions.kickR] =
+  await Promise.all([
+    ort.InferenceSession.create(signed(POLICIES.walk), sessionOpts),
+    ort.InferenceSession.create(signed(POLICIES.sitstand), sessionOpts),
+    ort.InferenceSession.create(signed(POLICIES.roll), sessionOpts),
+    ort.InferenceSession.create(signed(POLICIES.kickL), sessionOpts),
+    ort.InferenceSession.create(signed(POLICIES.kickR), sessionOpts),
+  ]);
 
 setLoading("Compiling physics\u2026");
 const model = mujoco.MjModel.from_xml_string(xml, vfs);
@@ -197,13 +204,14 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
-const padPrev = { x: false, dpadDown: false, dpadUp: false, rtArmed: true };
+const padPrev = { x: false, rb: false, lb: false, dpadDown: false, dpadUp: false, rtArmed: true };
 // Declared before the control loop starts: buildObs reads it via
 // effectiveCmd on the very first control step.
 const held = new Set();
 
-let mode = "walk"; // "walk" | "sitstand" | "roll"
+let mode = "walk"; // "walk" | "sitstand" | "roll" | "kickL" | "kickR"
 let sitFlag = 0;
+const isKick = () => mode === "kickL" || mode === "kickR";
 
 // The twist the policy actually receives: live gamepad sticks win over the
 // held keys. No input means zero command - the duck stands in place.
@@ -212,13 +220,19 @@ let sitFlag = 0;
 // hands back to walk on its own - steering would only knock the roll over.
 const ZERO_CMD = new Float32Array(3);
 function effectiveCmd() {
-  if (mode === "roll") return ZERO_CMD;
+  if (mode === "roll" || isKick()) return ZERO_CMD;
   return padActive ? padCmd : velCmd;
 }
 // One-shot roll tracking: trigger time + whether the trunk actually
 // tipped over yet. Set by triggerRoll, cleared when we hand back to walk.
 let rollRun = null;
 let rollSource = "kb"; // which hint lights up: keyboard Space or pad X
+// One-shot kick tracking: the runtime swaps the kick policy in for a fixed
+// 0.5 s window (25 control steps at 50 Hz) with zeroed commands, then hands
+// straight back to walking. lastAction stays continuous across both swaps.
+let kickRun = null;
+let kickSource = "kb";
+const KICK_STEPS = 25;
 
 // Pending mode-transition timers (sit hand-over, stand-up hand-back).
 // Every transition entry point clears them: a stale timer firing after
@@ -237,6 +251,7 @@ function resetSim() {
   // freshly reset duck.
   clearModeTimers();
   rollRun = null;
+  kickRun = null;
   mode = "walk";
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
   mujoco.mj_forward(model, data);
@@ -267,11 +282,13 @@ function buildObs() {
   // command: walking/roll use the twist; sitstand uses cmd[0] as the
   // posture flag.
   cmd.fill(0, 0, 3);
-  if (mode === "walk" || mode === "roll") {
+  if (mode === "sitstand") {
+    cmd[0] = sitFlag;
+  } else {
+    // walk uses the live twist; roll and kick see all-zero commands
+    // (via effectiveCmd), matching how they were trained.
     const c = effectiveCmd();
     cmd[0] = c[0]; cmd[1] = c[1]; cmd[2] = c[2];
-  } else {
-    cmd[0] = sitFlag;
   }
   for (let c = 0; c < CMD_SIZE; c++) obs[i++] = cmd[c];
   return obs;
@@ -312,6 +329,18 @@ async function controlStep() {
   // tipped over and is upright again, or after a hard 2 s window if the roll
   // never initiated. Counting steps instead of wall time keeps the logic
   // correct when the sim is fast-forwarded or the tab is throttled.
+  // One-shot kick: fixed 0.5 s window like the robot runtime, then straight
+  // back to walking. lastAction is NOT zeroed on either swap - the runtime
+  // keeps one continuous action history across policy switches.
+  if (isKick() && kickRun) {
+    kickRun.steps++;
+    if (kickRun.steps >= KICK_STEPS) {
+      kickRun = null;
+      mode = "walk";
+      if (uiReady) syncButtons();
+    }
+  }
+
   if (mode === "roll" && rollRun) {
     rollRun.steps++;
     if (obs[5] > -0.3) rollRun.tipped = true;
@@ -526,10 +555,11 @@ const keyEls = {
   fwd: el("key-fwd"), back: el("key-back"),
   turnl: el("key-turnl"), turnr: el("key-turnr"),
   left: el("key-left"), right: el("key-right"),
-  roll: el("key-roll"), reset: el("key-reset"),
-  padX: el("key-pad-x"), padSit: el("key-pad-sit"),
-  padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
-};
+    roll: el("key-roll"), reset: el("key-reset"), kick: el("key-kick"),
+    padX: el("key-pad-x"), padSit: el("key-pad-sit"),
+    padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
+    padRb: el("key-pad-rb"), padLb: el("key-pad-lb"),
+  };
 const STICK_R = 15; // px, max dot travel inside the 46px stick circle
 let resetFlashAt = -Infinity;
 
@@ -558,8 +588,11 @@ function renderStats() {
     keyEls[k].classList.toggle("lit", held.has(k));
   }
   keyEls.roll.classList.toggle("lit", mode === "roll" && rollSource === "kb");
+  keyEls.kick.classList.toggle("lit", isKick() && kickSource === "kb");
   keyEls.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
   keyEls.padX.classList.toggle("lit", mode === "roll" && rollSource === "pad");
+  keyEls.padRb.classList.toggle("lit", mode === "kickR" && kickSource === "pad");
+  keyEls.padLb.classList.toggle("lit", mode === "kickL" && kickSource === "pad");
   keyEls.padSit.classList.toggle("lit", sitting);
   keyEls.padRun.classList.toggle("lit", padPrev.dpadUp);
   keyEls.padRt.classList.toggle("lit", padJaw > 0.3);
@@ -602,10 +635,17 @@ const KEYMAP = {
   KeyQ: "left", KeyE: "right",
 };
 
+// Keyboard kicks alternate feet (the pad picks explicitly via RB/LB).
+let kickNextLeft = false;
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   if (e.code === "KeyR") { resetSim(); resetFlashAt = performance.now(); return; }
   if (e.code === "Space") { e.preventDefault(); triggerRoll(); return; }
+  if (e.code === "KeyF") {
+    e.preventDefault();
+    if (triggerKick(kickNextLeft ? "left" : "right")) kickNextLeft = !kickNextLeft;
+    return;
+  }
   const act = KEYMAP[e.code];
   if (!act) return;
   e.preventDefault();
@@ -652,10 +692,18 @@ pollPad = function pollGamepad() {
     padCmd.fill(0);
   }
 
-  // Standard mapping indices: X=2, DpadDown=13, RT=7 (analog value).
+  // Standard mapping indices: X=2, LB=4, RB=5, DpadDown=13, RT=7 (analog).
   const x = !!gp.buttons[2]?.pressed;
   if (x && !padPrev.x) triggerRoll("pad");
   padPrev.x = x;
+
+  // RB / LB: right / left kick, same buttons as the robot runtime.
+  const rb = !!gp.buttons[5]?.pressed;
+  if (rb && !padPrev.rb) triggerKick("right", "pad");
+  padPrev.rb = rb;
+  const lb = !!gp.buttons[4]?.pressed;
+  if (lb && !padPrev.lb) triggerKick("left", "pad");
+  padPrev.lb = lb;
 
   const dpadDown = !!gp.buttons[13]?.pressed;
   if (dpadDown && !padPrev.dpadDown) {
@@ -687,9 +735,9 @@ pollPad = function pollGamepad() {
 const modeLabel = document.getElementById("mode-label");
 
 function setMode(next) {
-  // No policy switching mid-roll: the roll ends on its own (upright again
-  // or expired) and returns to walk - switching now would floor the duck.
-  if (mode === "roll" && rollRun) return;
+  // No policy switching mid-roll or mid-kick: both end on their own and
+  // return to walk - switching now would floor the duck.
+  if ((mode === "roll" && rollRun) || (isKick() && kickRun)) return;
   clearModeTimers();
   quack();
   rollRun = null;
@@ -739,6 +787,22 @@ function triggerRoll(source = "kb") {
   rollRun = { steps: 0, tipped: false };
   syncButtons();
 }
+
+// One blind kick (the duck can't see any ball - it's a scripted boot),
+// left or right leg. Same launch constraints as the roll. Returns whether
+// the kick actually launched so the keyboard's foot alternation only
+// advances on real kicks.
+function triggerKick(foot, source = "kb") {
+  if (mode !== "walk" || standTimer) return false;
+  clearModeTimers();
+  kickSource = source;
+  quack();
+  mode = foot === "left" ? "kickL" : "kickR";
+  sitFlag = 0;
+  kickRun = { steps: 0 };
+  syncButtons();
+  return true;
+}
 // Slot-machine roll: the old text slides up and out while the new one
 // rises in from below the (overflow-hidden) label box.
 function setModeLabel(text) {
@@ -758,7 +822,7 @@ function setModeLabel(text) {
 
 function syncButtons() {
   const sitting = mode === "sitstand" && sitFlag === 1;
-  setModeLabel(mode === "roll" ? "Roll" : sitting ? "Sit" : "Run");
+  setModeLabel(mode === "roll" ? "Roll" : isKick() ? "Kick" : sitting ? "Sit" : "Run");
 }
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────

@@ -392,10 +392,12 @@
         <span class="hint"><span class="key" id="key-turnl">&larr;</span><span class="key" id="key-turnr">&rarr;</span> turn</span> &nbsp;
         <span class="hint"><span class="key" id="key-left">A</span><span class="key" id="key-right">E</span> strafe</span><br />
         <span class="hint"><span class="key" id="key-roll">Space</span> roll</span> &nbsp;
+        <span class="hint"><span class="key" id="key-kick">F</span> kick</span> &nbsp;
         <span class="hint"><span class="key" id="key-reset">R</span> reset</span> &nbsp;
         drag to orbit &middot; scroll to zoom<br />
         <span id="pad-hint">gamepad:
           <span class="hint"><span class="key" id="key-pad-x">X</span> roll</span> &nbsp;
+          <span class="hint"><span class="key" id="key-pad-rb">RB</span><span class="key" id="key-pad-lb">LB</span> kick</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-sit">&dArr;</span> sit</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-run">&uArr;</span> run</span> &nbsp;
           <span class="hint"><span class="key" id="key-pad-rt">RT</span> quack</span>
@@ -419,6 +421,7 @@
         <ul>
           <li><b>Move</b><span>Arrows or ZQSD to run and turn, A / E to strafe, drag to orbit.</span></li>
           <li><b>Roll</b><span>Space triggers a barrel roll, then it gets back up.</span></li>
+          <li><b>Kick</b><span>F throws a kick, alternating feet (RB / LB on the pad).</span></li>
           <li><b>Gamepad</b><span>Plug one in - same mapping as the real robot.</span></li>
           <li><b>Ghosts</b><span>Other visitors right now appear as translucent ducks, live.</span></li>
         </ul>
@@ -468,7 +471,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "24"; // bump on rl.js changes to defeat heuristic caching
+      const V = "25"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);
