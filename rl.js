@@ -208,7 +208,11 @@ let sitFlag = 0;
 // The twist the policy actually receives: live gamepad sticks win over the
 // held keys. No input means zero command - the duck stands in place.
 // Shared by buildObs and the HUD mini-sticks so they can never disagree.
+// Mid-roll every movement input is ignored (zero twist) until the roll
+// hands back to walk on its own - steering would only knock the roll over.
+const ZERO_CMD = new Float32Array(3);
 function effectiveCmd() {
+  if (mode === "roll") return ZERO_CMD;
   return padActive ? padCmd : velCmd;
 }
 // One-shot roll tracking: trigger time + whether the trunk actually
@@ -465,8 +469,13 @@ let padJaw = 0;
 // is swallowed and sound simply starts working after the first click/key.
 const quackSound = new Audio(signed("./assets/quack.wav"));
 quackSound.volume = 0.7;
+// Silent jaw flap for mode/colour changes; the actual quack sound only
+// plays on the gamepad right trigger (anything more gets noisy fast).
 const quack = () => {
   quackAt = performance.now();
+};
+const quackLoud = () => {
+  quack();
   quackSound.currentTime = 0;
   quackSound.play().catch(() => {});
 };
@@ -505,7 +514,7 @@ function renderStats() {
 
   // Mini sticks: the dot mirrors the effective twist, lit yellow while the
   // user is actually driving.
-  const manual = padActive || held.size > 0;
+  const manual = (padActive || held.size > 0) && mode !== "roll";
   const yN = vx >= 0 ? vx / VEL_FWD : vx / -VEL_BACK;
   dotMove.style.transform = `translate(${(-vy / VEL_LAT) * STICK_R}px, ${-yN * STICK_R}px)`;
   dotTurn.style.transform = `translate(${(-wz / VEL_ANG) * STICK_R}px, 0px)`;
@@ -636,7 +645,7 @@ pollPad = function pollGamepad() {
   const rt = gp.buttons[7]?.value ?? 0;
   const lt = gp.buttons[6]?.value ?? 0;
   padJaw = Math.max(rt, lt);
-  if (padPrev.rt < 0.3 && rt >= 0.3) quack();
+  if (padPrev.rt < 0.3 && rt >= 0.3) quackLoud();
   padPrev.rt = rt;
 };
 
@@ -645,6 +654,9 @@ pollPad = function pollGamepad() {
 const modeLabel = document.getElementById("mode-label");
 
 function setMode(next) {
+  // No policy switching mid-roll: the roll ends on its own (upright again
+  // or expired) and returns to walk - switching now would floor the duck.
+  if (mode === "roll" && rollRun) return;
   quack();
   rollRun = null;
   if (next !== "sit") {

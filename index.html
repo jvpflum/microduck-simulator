@@ -281,12 +281,18 @@
         from { transform: translateY(18px) scale(0.94); opacity: 0; }
         to { transform: none; opacity: 1; }
       }
-      #welcome .logo-wordmark {
-        display: block;
-        width: min(78%, 300px);
+      /* Duck-head mark from the site header: closed by default, open on
+         hover (same swap as the site). */
+      #welcome .logo-head {
+        position: relative;
+        width: 7.2rem;
         margin: 0.3rem auto 0;
         filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.45));
       }
+      #welcome .logo-head img { display: block; width: 100%; }
+      #welcome .logo-head .open { position: absolute; inset: 0; opacity: 0; }
+      #welcome .logo-head:hover .open { opacity: 1; }
+      #welcome .logo-head:hover .closed { opacity: 0; }
       #welcome .subtitle {
         margin-top: 0.55rem;
         font-size: 0.62rem;
@@ -400,7 +406,10 @@
 
     <div id="welcome" hidden>
       <div class="card" role="dialog" aria-modal="true" aria-label="Microduck playground">
-        <img class="logo-wordmark" id="logo-wordmark" alt="Microduck" />
+        <div class="logo-head">
+          <img class="closed" id="logo-head-closed" alt="Microduck" />
+          <img class="open" id="logo-head-open" alt="" aria-hidden="true" />
+        </div>
         <div class="subtitle">RL playground</div>
         <p class="tagline">
           A real robot brain in your browser: MuJoCo physics compiled to
@@ -427,7 +436,8 @@
         // on the private Space (rl.js hasn't installed its signer yet).
         const sign = new URLSearchParams(location.search).get("__sign");
         const signedUrl = (u) => (sign ? `${u}?__sign=${encodeURIComponent(sign)}` : u);
-        document.getElementById("logo-wordmark").src = signedUrl("./assets/logo-wordmark.png");
+        document.getElementById("logo-head-closed").src = signedUrl("./assets/duck-head-mark.webp");
+        document.getElementById("logo-head-open").src = signedUrl("./assets/duck-head-mark-open.webp");
         const open = () => {
           modal.hidden = false;
           modal.classList.remove("closing");
@@ -458,7 +468,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "22"; // bump on rl.js changes to defeat heuristic caching
+      const V = "23"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);
