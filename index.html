@@ -28,30 +28,20 @@
         mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
         -webkit-mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
       }
-      header {
+      /* Top-left corner: what this is */
+      #brand {
         position: fixed;
-        top: 2.6rem;
-        left: 0;
-        right: 0;
-        text-align: center;
-        pointer-events: none;
-      }
-      header .facts {
+        top: 1.4rem;
+        left: 1.6rem;
+        z-index: 10;
         font-size: 0.72rem;
         font-weight: 600;
         letter-spacing: 0.14em;
         text-transform: uppercase;
         color: rgba(255, 255, 255, 0.55);
+        line-height: 1.8;
       }
-      header .facts b { color: var(--yellow); font-weight: 600; }
-      header h1 {
-        margin-top: 0.5rem;
-        font-size: clamp(1.6rem, 4vw, 2.6rem);
-        font-weight: 700;
-        letter-spacing: -0.03em;
-        color: #fff;
-      }
-      header h1 #verb { color: var(--yellow); }
+      #brand b { color: var(--yellow); font-weight: 600; }
       #loading {
         position: fixed;
         inset: 0;
@@ -66,17 +56,25 @@
         padding: 0 2rem;
         z-index: 20;
       }
-      /* Bottom control bar */
+      /* Bottom edges: controls left, key hints right */
       #hud {
         position: fixed;
         bottom: 1.4rem;
-        left: 0;
-        right: 0;
+        left: 1.6rem;
+        right: 1.6rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 1rem;
+        z-index: 10;
+        pointer-events: none;
+      }
+      #hud .stack {
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: flex-start;
         gap: 0.7rem;
-        z-index: 10;
+        pointer-events: auto;
       }
       #hud .row {
         display: flex;
@@ -122,6 +120,9 @@
         font-size: 0.7rem;
         letter-spacing: 0.08em;
         color: rgba(255, 255, 255, 0.4);
+        text-align: right;
+        line-height: 1.9;
+        pointer-events: auto;
       }
       #hud .keys b { color: rgba(255, 255, 255, 0.75); font-weight: 600; }
       #stats {
@@ -137,27 +138,34 @@
         font-variant-numeric: tabular-nums;
       }
       #stats b { color: var(--yellow); font-weight: 600; }
+      @media (max-width: 700px) {
+        #hud { flex-direction: column; align-items: flex-start; }
+        #hud .keys { display: none; }
+        #brand .sub { display: none; }
+      }
     </style>
   </head>
   <body>
     <div id="scene"></div>
     <div class="halftone"></div>
-    <header>
-      <div class="facts"><b>Microduck</b> &middot; real trained policies &middot; MuJoCo + ONNX, live in your browser</div>
-      <h1>This one actually learned to <span id="verb">run</span></h1>
-    </header>
+    <div id="brand">
+      <b>Microduck</b> &middot; real trained policies<br />
+      <span class="sub">MuJoCo + ONNX, live in your browser</span>
+    </div>
     <div id="stats"></div>
     <div id="hud" hidden>
-      <div class="row">
-        <button id="btn-walk" class="on">Run</button>
-        <button id="btn-sit">Sit</button>
-        <button id="btn-roulade">Roulade</button>
-        <button id="btn-reset">Reset</button>
+      <div class="stack">
+        <div class="row">
+          <button id="btn-walk" class="on">Run</button>
+          <button id="btn-sit">Sit</button>
+          <button id="btn-roulade">Roulade</button>
+          <button id="btn-reset">Reset</button>
+        </div>
+        <div class="row" id="swatches"></div>
       </div>
-      <div class="row" id="swatches"></div>
       <div class="keys">
-        <b>&uarr;/&darr;</b> forward / back &nbsp; <b>&larr;/&rarr;</b> turn &nbsp;
-        <b>A/E</b> strafe &nbsp; <b>R</b> reset &nbsp; drag to orbit
+        <b>&uarr;/&darr;</b> forward / back &nbsp; <b>&larr;/&rarr;</b> turn &nbsp; <b>A/E</b> strafe<br />
+        <b>R</b> reset &nbsp; drag to orbit &nbsp; scroll to zoom
       </div>
     </div>
     <div id="loading">Compiling physics&hellip;</div>

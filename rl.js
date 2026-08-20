@@ -60,7 +60,6 @@ const mount = document.getElementById("scene");
 const loadingEl = document.getElementById("loading");
 const hudEl = document.getElementById("hud");
 const statsEl = document.getElementById("stats");
-const verbEl = document.getElementById("verb");
 const setLoading = (msg) => { loadingEl.textContent = msg; };
 
 // Surface boot failures on the page itself: a rejected top-level await
@@ -302,36 +301,58 @@ const rim = new THREE.DirectionalLight(0xffb366, 0.7);
 rim.position.set(0, 3, -2);
 scene.add(rim);
 
-function makeFloorTexture() {
-  const N = 256;
-  const c = document.createElement("canvas");
-  c.width = c.height = N;
-  const g = c.getContext("2d");
-  g.fillStyle = "#131009";
-  g.fillRect(0, 0, N, N);
-  g.strokeStyle = "rgba(255, 179, 102, 0.05)";
-  g.lineWidth = 2;
-  g.strokeRect(1, 1, N - 2, N - 2);
-  g.fillStyle = "rgba(255, 198, 30, 0.10)";
-  for (const x of [0, N]) {
-    for (const y of [0, N]) {
-      g.beginPath();
-      g.arc(x, y, 5, 0, Math.PI * 2);
-      g.fill();
-    }
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(48, 48);
-  return tex;
+// Infinite shader grid, ported from drei's <Grid> (we're in vanilla three,
+// not R3F): anti-aliased world-space lines at cell/section frequencies with
+// a radial fade around the duck. Lines derive from world coordinates, so
+// re-centering the mesh under the camera target every frame makes the grid
+// effectively infinite without any visible swimming.
+function makeInfiniteGrid() {
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uCell: { value: 0.1 },
+      uSection: { value: 0.5 },
+      uCellColor: { value: new THREE.Color(0x7d7360) },
+      uSectionColor: { value: new THREE.Color(0xffb366) },
+      uFadeDist: { value: 3.0 },
+      uFocus: { value: new THREE.Vector3() },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vWorld;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vWorld;
+      uniform float uCell, uSection, uFadeDist;
+      uniform vec3 uCellColor, uSectionColor, uFocus;
+      float gridLine(vec2 p, float size) {
+        vec2 r = p / size;
+        vec2 g = abs(fract(r - 0.5) - 0.5) / fwidth(r);
+        return 1.0 - min(min(g.x, g.y), 1.0);
+      }
+      void main() {
+        float cell = gridLine(vWorld.xz, uCell);
+        float section = gridLine(vWorld.xz, uSection);
+        float d = distance(vWorld.xz, uFocus.xz);
+        float fade = pow(clamp(1.0 - d / uFadeDist, 0.0, 1.0), 1.6);
+        vec3 col = mix(uCellColor, uSectionColor, section);
+        float alpha = max(section * 0.45, cell * 0.3) * fade;
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), material);
+  mesh.rotation.x = -Math.PI / 2;
+  return mesh;
 }
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(12, 12),
-  new THREE.MeshStandardMaterial({ map: makeFloorTexture(), roughness: 0.9, metalness: 0.0 }),
-);
-floor.rotation.x = -Math.PI / 2;
-scene.add(floor);
+const grid = makeInfiniteGrid();
+scene.add(grid);
 
 const rig = await rigPromise;
 scene.add(rig.placer);
@@ -370,6 +391,9 @@ function syncRig() {
   _follow.copy(_target).sub(controls.target).multiplyScalar(0.06);
   controls.target.add(_follow);
   camera.position.add(_follow);
+  // Keep the grid plane (and its fade center) under the action.
+  grid.position.set(controls.target.x, 0, controls.target.z);
+  grid.material.uniforms.uFocus.value.copy(controls.target);
 }
 
 // Quack: a quick jaw flap on every mode/colour change. The jaw isn't a
@@ -444,9 +468,6 @@ const btnSit = document.getElementById("btn-sit");
 const btnRoulade = document.getElementById("btn-roulade");
 document.getElementById("btn-reset").addEventListener("click", resetSim);
 
-// The headline verb tracks the active policy.
-const VERBS = { walk: "run", sitstand: "sit", roulade: "roll over" };
-
 function setMode(next) {
   quack();
   if (next !== "sit") {
@@ -477,7 +498,6 @@ function syncButtons() {
   btnWalk.classList.toggle("on", mode === "walk" || (mode === "sitstand" && !sitting));
   btnSit.classList.toggle("on", sitting);
   btnRoulade.classList.toggle("on", mode === "roulade");
-  verbEl.textContent = VERBS[mode];
 }
 btnWalk.addEventListener("click", () => setMode("walk"));
 btnSit.addEventListener("click", () => setMode("sit"));
