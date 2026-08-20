@@ -42,19 +42,50 @@
         line-height: 1.8;
       }
       #brand b { color: var(--yellow); font-weight: 600; }
+      /* BIOS/POST boot readout: hidden while the welcome modal is up (the
+         real load runs silently behind it); rl.js reveals it after the
+         first "Waddle in" and replays / tracks the milestones over an
+         opaque dark screen before fading into the scene. */
       #loading {
         position: fixed;
         inset: 0;
-        display: flex;
+        display: none;
         align-items: center;
         justify-content: center;
-        font-size: 0.8rem;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.45);
-        text-align: center;
         padding: 0 2rem;
+        background: var(--ink);
         z-index: 20;
+        pointer-events: none;
+        opacity: 1;
+        transition: opacity 0.45s ease;
+      }
+      #loading.off { opacity: 0; }
+      #loading .post {
+        min-width: min(380px, 84vw);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.72rem;
+        line-height: 2.1;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        text-align: left;
+        color: rgba(255, 210, 63, 0.72);
+        text-shadow: 0 0 10px rgba(255, 210, 63, 0.2);
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+      }
+      #loading .post > div:first-child {
+        color: rgba(255, 255, 255, 0.8);
+        margin-bottom: 0.3rem;
+      }
+      /* Blinking block cursor at the end of the newest line */
+      #loading .post > div:last-child::after {
+        content: "\2588";
+        margin-left: 0.4em;
+        animation: post-blink 1s steps(1) infinite;
+      }
+      @keyframes post-blink {
+        0%, 55% { opacity: 1; }
+        56%, 100% { opacity: 0; }
       }
       /* Bottom edges: controls left, key hints right */
       #hud {
@@ -115,6 +146,7 @@
         text-transform: uppercase;
         color: rgba(255, 210, 63, 0.8);
         text-align: right;
+        text-shadow: 0 0 8px rgba(255, 210, 63, 0.3);
       }
       .mode .mode-text {
         position: absolute;
@@ -221,6 +253,8 @@
         transition: background 0.15s ease;
       }
       .stickbox.live .stickdot { background: var(--yellow); }
+      /* Camcorder OSD: REC light + VHS counter over the telemetry, all in
+         a phosphor-glow monospace. No scanlines - the type does the work. */
       #stats-wrap {
         position: fixed;
         top: 1.4rem;
@@ -229,20 +263,48 @@
         display: flex;
         flex-direction: column;
         align-items: flex-end;
-        gap: 0.15rem;
+        gap: 0.2rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .osd-top {
+        display: flex;
+        align-items: baseline;
+        gap: 0.9rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        color: rgba(255, 255, 255, 0.88);
+        text-shadow: 0 0 7px rgba(255, 255, 255, 0.28);
+        font-variant-numeric: tabular-nums;
+      }
+      .osd-rec {
+        color: #ff6a48;
+        text-shadow: 0 0 9px rgba(255, 90, 60, 0.55);
+      }
+      .osd-rec .rec-dot {
+        display: inline-block;
+        animation: rec-blink 1.2s steps(1) infinite;
+      }
+      @keyframes rec-blink {
+        0%, 58% { opacity: 1; }
+        59%, 100% { opacity: 0.12; }
       }
       #stats {
-        font-size: 0.68rem;
-        letter-spacing: 0.08em;
+        font-size: 0.62rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
         text-align: right;
-        color: rgba(255, 255, 255, 0.4);
+        color: rgba(255, 255, 255, 0.45);
         line-height: 1.7;
         font-variant-numeric: tabular-nums;
+        text-shadow: 0 0 6px rgba(255, 255, 255, 0.18);
       }
       @media (max-width: 700px) {
         #hud { flex-direction: column; align-items: flex-start; }
         #hud .keys { display: none; }
         #brand .sub { display: none; }
+        /* Drop the OSD below the (single-line) brand so they never collide */
+        #stats-wrap { top: 3.4rem; }
       }
       /* ── Welcome modal ─────────────────────────────────────────────── */
       /* display:flex would override the hidden attribute's UA display:none,
@@ -520,6 +582,10 @@
       <span class="sub">MuJoCo + ONNX, live in your browser</span>
     </div>
     <div id="stats-wrap">
+      <div class="osd-top">
+        <span class="osd-rec"><span class="rec-dot">&#9679;</span>&nbsp;REC</span>
+        <span id="osd-time">&#9654; 00:00:00</span>
+      </div>
       <div class="mode" id="mode-label"><span class="mode-text">Run</span></div>
       <div id="stats"></div>
     </div>
@@ -560,7 +626,7 @@
         </span>
       </div>
     </div>
-    <div id="loading">Compiling physics&hellip;</div>
+    <div id="loading"><div class="post"></div></div>
 
     <div id="welcome" hidden>
       <div class="card" role="dialog" aria-modal="true" aria-label="Microduck playground">
@@ -650,6 +716,13 @@
         const close = () => {
           modal.classList.add("closing");
           setTimeout(() => { modal.hidden = true; }, 380);
+          // First dismissal only: cue the BIOS boot replay in rl.js. The
+          // flag covers the race where the user enters before the module
+          // has finished evaluating.
+          if (!window.__microduckEntered) {
+            window.__microduckEntered = true;
+            document.dispatchEvent(new CustomEvent("microduck:enter"));
+          }
         };
         open();
         document.getElementById("welcome-go").addEventListener("click", close);
@@ -673,7 +746,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "31"; // bump on rl.js changes to defeat heuristic caching
+      const V = "32"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);

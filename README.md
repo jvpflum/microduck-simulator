@@ -61,8 +61,8 @@ ducks, live. Peer-to-peer WebRTC via [Trystero](https://github.com/dmotz/tryster
 (serverless signaling over public Nostr relays), so it works from a static
 Space with no backend. Each tab broadcasts its duck's pose (trunk + 14
 joints + jaw + colour) at 10 Hz; up to 3 ghosts are rendered, extra peers
-stay connected but invisible. The header shows "N online" when peers are
-around.
+stay connected but invisible. The camcorder-style OSD in the top-right
+corner shows "N ONLINE" when peers are around.
 
 ## How it works
 

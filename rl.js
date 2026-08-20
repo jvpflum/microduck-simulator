@@ -94,28 +94,87 @@ const mount = document.getElementById("scene");
 const loadingEl = document.getElementById("loading");
 const hudEl = document.getElementById("hud");
 const statsEl = document.getElementById("stats");
-const setLoading = (msg) => { loadingEl.textContent = msg; };
+const osdTimeEl = document.getElementById("osd-time");
+
+// BIOS/POST boot readout. The real load runs silently behind the welcome
+// modal and only RECORDS milestones into bootLog; the readout itself plays
+// after the first "Waddle in": a rapid-fire replay when everything already
+// finished, or an honest live tracker (cursor blinking on the pending
+// line) when the user enters mid-load. Never slows the actual boot.
+const postEl = loadingEl.querySelector(".post");
+const bootLog = []; // { label, status, raw, el } - status null = pending
+const lineText = (e) =>
+  e.raw || e.status === null ? e.label : `${e.label} `.padEnd(26, ".") + ` ${e.status}`;
+const bootLine = (label) => {
+  const entry = { label, status: null, raw: false, el: null };
+  bootLog.push(entry);
+  return (status = "OK") => {
+    entry.status = status;
+    if (entry.el) entry.el.textContent = lineText(entry);
+  };
+};
+// Plain line with no dotted leader (header / error text).
+const bootNote = (label) => {
+  bootLog.push({ label, status: "", raw: true, el: null });
+};
+bootNote("Microduck BIOS v1.0");
+bootLine("MEMORY CHECK")("640K OK");
+bootLine("DUCK FIRMWARE")("PRESENT");
+
+let bootDone = false;
+let biosStarted = false;
+const biosSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function playBios() {
+  if (biosStarted) return;
+  biosStarted = true;
+  loadingEl.style.display = "flex";
+  let i = 0;
+  for (;;) {
+    if (i < bootLog.length) {
+      const entry = bootLog[i++];
+      entry.el = document.createElement("div");
+      entry.el.textContent = lineText(entry);
+      postEl.appendChild(entry.el);
+      // Honest mode: hold on a stage still in flight (its completer will
+      // fill in the status), cursor blinking on it via CSS.
+      while (entry.status === null && !bootDone) await biosSleep(60);
+      await biosSleep(105); // rapid-fire pacing for finished lines
+    } else if (bootDone) {
+      break;
+    } else {
+      await biosSleep(60); // waiting for the next real stage
+    }
+  }
+  const ready = document.createElement("div");
+  ready.textContent = "READY.";
+  postEl.appendChild(ready);
+  await biosSleep(500);
+  loadingEl.classList.add("off");
+  await biosSleep(500);
+  loadingEl.style.display = "none";
+}
+// Only the initial entry triggers the replay; reopening the modal from
+// the brand later never replays (biosStarted latches).
+if (window.__microduckEntered) playBios();
+else document.addEventListener("microduck:enter", () => playBios(), { once: true });
 
 // Surface boot failures on the page itself: a rejected top-level await
-// otherwise leaves the loading screen up with no visible error.
+// otherwise leaves a dead page with no visible error.
 window.addEventListener("unhandledrejection", (e) => {
   const msg = e.reason?.stack || e.reason?.message || String(e.reason);
-  setLoading(`Boot failed: ${msg}`);
+  bootNote(`Boot failed: ${msg}`);
+  playBios();
   console.error("[rl] unhandled rejection", e.reason);
 });
 window.addEventListener("error", (e) => {
-  setLoading(`Boot failed: ${e.message}`);
+  bootNote(`Boot failed: ${e.message}`);
+  playBios();
 });
-const bootSteps = [];
 const traced = (label, p) => {
-  bootSteps.push(label);
+  const done = bootLine(label);
   return p.then(
-    (v) => {
-      bootSteps.splice(bootSteps.indexOf(label), 1);
-      if (bootSteps.length) setLoading(`Loading ${bootSteps.join(", ")}\u2026`);
-      return v;
-    },
-    (err) => { console.error(`[rl] ${label} FAILED`, err); throw err; },
+    (v) => { done("OK"); return v; },
+    (err) => { done("FAIL"); console.error(`[rl] ${label} FAILED`, err); throw err; },
   );
 };
 
@@ -198,14 +257,13 @@ async function buildPhysicsXml() {
 }
 
 // ── Boot physics + policy in parallel with the render rig ──────────────
-setLoading("Loading MuJoCo WASM, policies and meshes\u2026");
-
 const [mujoco, { xml, meshFiles }, k] = await Promise.all([
-  traced("mujoco wasm", loadMujoco()),
-  traced("physics xml", buildPhysicsXml()),
-  traced("kinematics", loadKinematics(`${MODEL_DIR}/kinematics.json`)),
+  traced("MUJOCO WASM", loadMujoco()),
+  traced("PHYSICS MJCF", buildPhysicsXml()),
+  traced("KINEMATICS", loadKinematics(`${MODEL_DIR}/kinematics.json`)),
 ]);
 
+const doneMeshes = bootLine("MESH ASSETS");
 const vfs = new mujoco.MjVFS();
 await Promise.all(
   meshFiles.map(async (f) => {
@@ -216,12 +274,17 @@ await Promise.all(
     vfs.addBuffer(`assets/${f}`, new Uint8Array(buf));
   }),
 );
+doneMeshes(`${meshFiles.length} FILES`);
 
 const sessions = {};
 let currentVariant = randomVariantName();
 const rigPromise = (async () => {
-  return buildRig(k, { materialForMesh: materialHookFor(VARIANTS[currentVariant]) });
+  const doneRig = bootLine("RENDER RIG");
+  const rig = await buildRig(k, { materialForMesh: materialHookFor(VARIANTS[currentVariant]) });
+  doneRig("OK");
+  return rig;
 })();
+const donePolicies = bootLine("LOADING POLICIES");
 const sessionOpts = { executionProviders: ["wasm"] };
 [sessions.walk, sessions.sitstand, sessions.roll, sessions.kickL, sessions.kickR] =
   await Promise.all([
@@ -231,10 +294,12 @@ const sessionOpts = { executionProviders: ["wasm"] };
     ort.InferenceSession.create(signed(POLICIES.kickL), sessionOpts),
     ort.InferenceSession.create(signed(POLICIES.kickR), sessionOpts),
   ]);
+donePolicies("5/5");
 
-setLoading("Compiling physics\u2026");
+const doneCompile = bootLine("COMPILING PHYSICS");
 const model = mujoco.MjModel.from_xml_string(xml, vfs);
 const data = new mujoco.MjData(model);
+doneCompile("COMPILED");
 
 // Addresses resolved once. qpos/qvel/sensordata views are re-read at each
 // use: the WASM heap can grow and detach earlier TypedArray views.
@@ -975,9 +1040,13 @@ function renderStats() {
   // The active policy lives in the big center label and the twist in the
   // mini sticks; up here only the bare telemetry remains.
   const peers = ghosts?.peerCount() ?? 0;
+  // VHS counter: sim time as mm:ss:ff where ff counts control frames (50Hz).
+  const t = data.time;
+  const p2 = (n) => String(n).padStart(2, "0");
+  osdTimeEl.textContent =
+    `\u25b6 ${p2(Math.floor(t / 60))}:${p2(Math.floor(t) % 60)}:${p2(Math.floor((t % 1) * 50))}`;
   statsEl.textContent =
-    `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s` +
-    (peers ? ` \u00b7 ${peers + 1} online` : "");
+    `CTRL ${ctrlHz.toFixed(0)}HZ` + (peers ? ` \u00b7 ${peers + 1} ONLINE` : "");
 
   // Mini sticks: the dot mirrors the effective twist, lit yellow while the
   // user is actually driving.
@@ -1029,7 +1098,10 @@ function loop() {
   renderStats();
   renderer.render(scene, camera);
 }
-loadingEl.style.display = "none";
+// Boot complete: the sim/HUD go live immediately. The BIOS readout (if
+// the user already waddled in, or when they do) sees bootDone and closes
+// with READY. + fade on its own.
+bootDone = true;
 hudEl.hidden = false;
 loop();
 
