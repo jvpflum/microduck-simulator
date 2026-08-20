@@ -197,7 +197,7 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
-const padPrev = { x: false, dpadDown: false, dpadUp: false, rt: 0 };
+const padPrev = { x: false, dpadDown: false, dpadUp: false, rtArmed: true };
 // Declared before the control loop starts: buildObs reads it via
 // effectiveCmd on the very first control step.
 const held = new Set();
@@ -220,7 +220,24 @@ function effectiveCmd() {
 let rollRun = null;
 let rollSource = "kb"; // which hint lights up: keyboard Space or pad X
 
+// Pending mode-transition timers (sit hand-over, stand-up hand-back).
+// Every transition entry point clears them: a stale timer firing after
+// the state has moved on is exactly how a sitting or rolling duck ends
+// up handed to the walking policy mid-motion.
+let sitTimer = null;
+let standTimer = null;
+function clearModeTimers() {
+  clearTimeout(sitTimer); sitTimer = null;
+  clearTimeout(standTimer); standTimer = null;
+}
+
 function resetSim() {
+  // A reset is a full transition to the walking stand: cancel any roll in
+  // flight and any pending sit/stand hand-over, or they'd replay on the
+  // freshly reset duck.
+  clearModeTimers();
+  rollRun = null;
+  mode = "walk";
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
   mujoco.mj_forward(model, data);
   lastAction.fill(0);
@@ -461,14 +478,28 @@ function syncRig() {
 const QUACK_MS = 480;
 let quackAt = -Infinity;
 let padJaw = 0;
-// Same sound as the robot: the runtime plays its voice-bank chirp on every
-// mouth-open edge and falls back to the stock quack.wav — the only audio
-// asset in the repo, so that's what we ship. Restarting playback on each
-// trigger matches the runtime's "cut off any still-playing sound".
+// Voice banks from the robot runtime: each printed duck ships a different
+// voice, so each colourway gets its own bank and every quack draws a
+// random chirp take from it - same as the real ducks all sounding
+// slightly different. Audio elements are created lazily and cached.
 // Browsers block audio until the first user gesture; the rejected play()
 // is swallowed and sound simply starts working after the first click/key.
-const quackSound = new Audio(signed("./assets/quack.wav"));
-quackSound.volume = 0.7;
+const CHIRP_TAKES = "abcdefghijkl";
+const VOICE_BANK = { classic: "duck1", charcoal: "duck2", purple: "duck3", blue: "duck4" };
+const chirpCache = new Map();
+function playChirp() {
+  const bank = VOICE_BANK[currentVariant] ?? "duck1";
+  const take = CHIRP_TAKES[(Math.random() * CHIRP_TAKES.length) | 0];
+  const url = signed(`./assets/voices/${bank}/chirp_${take}.wav`);
+  let a = chirpCache.get(url);
+  if (!a) {
+    a = new Audio(url);
+    a.volume = 0.7;
+    chirpCache.set(url, a);
+  }
+  a.currentTime = 0;
+  a.play().catch(() => {});
+}
 // Silent jaw flap for mode/colour changes; the actual quack sound only
 // plays on the gamepad right trigger (anything more gets noisy fast).
 const quack = () => {
@@ -476,8 +507,7 @@ const quack = () => {
 };
 const quackLoud = () => {
   quack();
-  quackSound.currentTime = 0;
-  quackSound.play().catch(() => {});
+  playChirp();
 };
 function jawOpenNow() {
   const t = (performance.now() - quackAt) / QUACK_MS;
@@ -642,11 +672,14 @@ pollPad = function pollGamepad() {
 
   // Triggers drive the mouth like the runtime (max of both), and the right
   // one quacks on its rising edge — same as the robot's chirp.
+  // Schmitt trigger on the analog RT value: fire at 0.35, re-arm only once
+  // it drops below 0.2. A single threshold re-fires on every jitter around
+  // it, which is how one squeeze used to quack several times.
   const rt = gp.buttons[7]?.value ?? 0;
   const lt = gp.buttons[6]?.value ?? 0;
   padJaw = Math.max(rt, lt);
-  if (padPrev.rt < 0.3 && rt >= 0.3) quackLoud();
-  padPrev.rt = rt;
+  if (padPrev.rtArmed && rt >= 0.35) { quackLoud(); padPrev.rtArmed = false; }
+  else if (!padPrev.rtArmed && rt < 0.2) padPrev.rtArmed = true;
 };
 
 // Read-only state label (bottom-left): reflects the active policy,
@@ -657,13 +690,19 @@ function setMode(next) {
   // No policy switching mid-roll: the roll ends on its own (upright again
   // or expired) and returns to walk - switching now would floor the duck.
   if (mode === "roll" && rollRun) return;
+  clearModeTimers();
   quack();
   rollRun = null;
   if (next !== "sit") {
     // Leaving a sit: let the sitstand policy stand the duck back up first.
     if (mode === "sitstand" && sitFlag === 1) {
       sitFlag = 0;
-      setTimeout(() => { mode = next; lastAction.fill(0); syncButtons(); }, 2000);
+      standTimer = setTimeout(() => {
+        standTimer = null;
+        mode = next;
+        lastAction.fill(0);
+        syncButtons();
+      }, 2000);
       syncButtons();
       return;
     }
@@ -676,7 +715,8 @@ function setMode(next) {
     mode = "sitstand";
     sitFlag = 0;
     lastAction.fill(0);
-    setTimeout(() => {
+    sitTimer = setTimeout(() => {
+      sitTimer = null;
       if (mode === "sitstand") { sitFlag = 1; syncButtons(); }
     }, 800);
   }
@@ -688,7 +728,10 @@ function setMode(next) {
 // continuous action history across policy switches, and the roll initiates
 // more reliably mid-gait with the true last actions in the obs.
 function triggerRoll(source = "kb") {
-  if (mode === "roll") return;
+  // Rolls only launch from a standing walk: from a sit (or mid sit/stand
+  // hand-over) the roll policy just faceplants the duck.
+  if (mode !== "walk" || standTimer) return;
+  clearModeTimers();
   rollSource = source;
   quack();
   mode = "roll";

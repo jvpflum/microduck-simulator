@@ -468,7 +468,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "23"; // bump on rl.js changes to defeat heuristic caching
+      const V = "24"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);
