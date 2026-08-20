@@ -28,26 +28,24 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 
 ## Controls
 
-- Arrow up / down: forward / back
-- Arrow left / right: turn
-- A / E: strafe
-- Space: roll (one barrel roll, then back to running)
-- F: kick, alternating feet
+- Arrows or WASD (ZQSD): forward / back + turn
+- Q / E (A / E on AZERTY): kick left / right
+- R: roll (one barrel roll, then back to running)
 - B: pop / respawn a kickable ball in front of the duck
 - C: toggle the chase camera (on by default; dragging detaches it)
-- R: reset
+- Space: reset
 - Drag to orbit, scroll to zoom
 - Colour dots: repaint the duck (it quacks)
 
 The ball is local-only: it lives in your tab's physics and is not shared
-with the multiplayer ghosts.
+with the multiplayer ghosts. A square arena (3 x 3 m) fences the play
+area so neither the ball nor the duck can wander off.
 
 ### Gamepad
 
 Plug in a controller and the same mapping as the real robot runtime applies:
 
-- Left stick: forward / back + strafe
-- Right stick: turn
+- Left stick: forward / back + turn
 - X: roll
 - Y: pop / respawn the ball
 - RB / LB: right / left kick

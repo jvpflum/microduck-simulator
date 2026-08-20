@@ -77,14 +77,18 @@ const DECIMATION = 4;
 const CTRL_DT = TIMESTEP * DECIMATION; // 50 Hz
 
 // Velocity command limits, same as infer_policy.py's keyboard mapping.
-const VEL_FWD = 0.25, VEL_BACK = -0.2, VEL_LAT = 0.2, VEL_ANG = 1.0;
+// No strafe input anymore: the lateral cmd slot stays zeroed for the obs.
+const VEL_FWD = 0.25, VEL_BACK = -0.2, VEL_ANG = 1.0;
 
-// Kickable ball: radius, parking spot (far away = hidden by default) and
-// the distance past which the respawn watchdog brings it back (the grid
-// fades out at 3 m, so a ball beyond that is invisible anyway).
+// Kickable ball: radius and parking spot (far away = hidden by default).
 const BALL_RADIUS = 0.05;
 const BALL_PARK_POS = "50 0 0.05";
-const BALL_MAX_DIST = 3.0;
+
+// Square arena boxing the play area: static walls at +-ARENA_HALF keep
+// the ball (and the duck) inside. Tall enough that neither steps over.
+const ARENA_HALF = 1.5; // inner half-size, m
+const ARENA_WALL_H = 0.25;
+const ARENA_WALL_T = 0.05;
 
 const mount = document.getElementById("scene");
 const loadingEl = document.getElementById("loading");
@@ -144,6 +148,21 @@ async function buildPhysicsXml() {
   doc.querySelector("worldbody").appendChild(
     el("geom", { name: "floor", type: "plane", size: "0 0 0.05", pos: "0 0 0" }),
   );
+  // Arena walls: four static boxes (no joints, so no qpos/keyframe
+  // impact); default contype/conaffinity collides with ball and duck.
+  const ht = ARENA_WALL_T / 2, hh = ARENA_WALL_H / 2;
+  const off = ARENA_HALF + ht, span = ARENA_HALF + ARENA_WALL_T;
+  const walls = [
+    { name: "wall_px", pos: `${off} 0 ${hh}`, size: `${ht} ${span} ${hh}` },
+    { name: "wall_nx", pos: `${-off} 0 ${hh}`, size: `${ht} ${span} ${hh}` },
+    { name: "wall_py", pos: `0 ${off} ${hh}`, size: `${span} ${ht} ${hh}` },
+    { name: "wall_ny", pos: `0 ${-off} ${hh}`, size: `${span} ${ht} ${hh}` },
+  ];
+  for (const w of walls) {
+    doc.querySelector("worldbody").appendChild(
+      el("geom", { name: w.name, type: "box", pos: w.pos, size: w.size }),
+    );
+  }
   // Kickable ball: a light free sphere (beach-ball feel). MuJoCo has no
   // restitution parameter - the bounce comes from solref damping < 1, and
   // the rolling-friction term makes it come to rest. Default contype /
@@ -256,7 +275,7 @@ let ballActive = false;
 // hands back to walk on its own - steering would only knock the roll over.
 const ZERO_CMD = new Float32Array(3);
 function effectiveCmd() {
-  if (mode === "roll" || isKick()) return ZERO_CMD;
+  if (mode === "roll" || isKick() || postKickLock > 0) return ZERO_CMD;
   return padActive ? padCmd : velCmd;
 }
 // One-shot roll tracking: trigger time + whether the trunk actually
@@ -268,7 +287,12 @@ let rollSource = "kb"; // which hint lights up: keyboard Space or pad X
 // straight back to walking. lastAction stays continuous across both swaps.
 let kickRun = null;
 let kickSource = "kb";
-const KICK_STEPS = 25;
+let KICK_STEPS = 25;
+// Post-kick grace: keep commands zeroed for a beat after the kick window
+// hands back to walk, so the duck finishes the strike cleanly instead of
+// instantly sprinting off. Step-counted like everything else.
+const POST_KICK_LOCK_STEPS = 20; // 0.4 s at 50 Hz
+let postKickLock = 0;
 
 // Pending mode-transition timers (sit hand-over, stand-up hand-back).
 // Every transition entry point clears them: a stale timer firing after
@@ -288,6 +312,7 @@ function resetSim() {
   clearModeTimers();
   rollRun = null;
   kickRun = null;
+  postKickLock = 0;
   mode = "walk";
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
   mujoco.mj_forward(model, data);
@@ -315,8 +340,12 @@ function spawnBall() {
   );
   const heading = yaw + (Math.random() - 0.5) * 0.7;
   const dist = 0.35 + (Math.random() - 0.5) * 0.1;
-  qpos[ballQposAdr] = qpos[0] + Math.cos(heading) * dist;
-  qpos[ballQposAdr + 1] = qpos[1] + Math.sin(heading) * dist;
+  // Clamp inside the arena: a duck standing against a wall must not pop
+  // the ball into (or beyond) it.
+  const lim = ARENA_HALF - BALL_RADIUS - 0.05;
+  const clamp = (v) => Math.min(lim, Math.max(-lim, v));
+  qpos[ballQposAdr] = clamp(qpos[0] + Math.cos(heading) * dist);
+  qpos[ballQposAdr + 1] = clamp(qpos[1] + Math.sin(heading) * dist);
   qpos[ballQposAdr + 2] = BALL_RADIUS + 0.02;
   qpos[ballQposAdr + 3] = 1;
   qpos[ballQposAdr + 4] = 0;
@@ -389,14 +418,17 @@ async function controlStep() {
     fallenSince = null;
   }
 
-  // Ball respawn watchdog: a kicked ball that wandered past the grid's
-  // fade distance is invisible and unreachable - bring it back near
-  // the duck. Re-read qpos: resetSim above may have re-parked the ball.
+  // Ball respawn watchdog: with the arena walls the ball can no longer
+  // legitimately leave, so this is a safety net for solver tunnelling -
+  // outside the arena bounds means "escaped through a glitch", bring it
+  // back near the duck. Re-read qpos: resetSim above may have re-parked
+  // the ball.
   if (ballActive) {
     const q = data.qpos;
-    const dx = q[ballQposAdr] - q[0];
-    const dy = q[ballQposAdr + 1] - q[1];
-    if (dx * dx + dy * dy > BALL_MAX_DIST * BALL_MAX_DIST) spawnBall();
+    const escaped =
+      Math.abs(q[ballQposAdr]) > ARENA_HALF + 0.1 ||
+      Math.abs(q[ballQposAdr + 1]) > ARENA_HALF + 0.1;
+    if (escaped) spawnBall();
   }
 
   // One-shot roll, step-counted like the robot runtime (a single roll is
@@ -407,11 +439,14 @@ async function controlStep() {
   // One-shot kick: fixed 0.5 s window like the robot runtime, then straight
   // back to walking. lastAction is NOT zeroed on either swap - the runtime
   // keeps one continuous action history across policy switches.
+  if (postKickLock > 0 && mode === "walk") postKickLock--;
+
   if (isKick() && kickRun) {
     kickRun.steps++;
     if (kickRun.steps >= KICK_STEPS) {
       kickRun = null;
       mode = "walk";
+      postKickLock = POST_KICK_LOCK_STEPS;
       if (uiReady) syncButtons();
     }
   }
@@ -533,56 +568,167 @@ function makeInfiniteGrid() {
 const grid = makeInfiniteGrid();
 scene.add(grid);
 
+// Arena walls, drawn in the same grid language as the floor: identical
+// cell/section lines from world coordinates, same radial fade around the
+// duck, plus a vertical fade toward the top edge so the walls read as a
+// light enclosure instead of solid slabs.
+function makeWallGridMaterial(alongX) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uCell: { value: 0.1 },
+      uSection: { value: 0.5 },
+      uCellColor: { value: new THREE.Color(0x7d7360) },
+      uSectionColor: { value: new THREE.Color(0xffb366) },
+      // Gentler radial fade than the floor: the walls sit 1.5+ m from the
+      // duck by construction and would vanish with the floor's 3 m fade.
+      uFadeDist: { value: 5.0 },
+      uFocus: { value: new THREE.Vector3() },
+      uWallH: { value: ARENA_WALL_H },
+      uAlongX: { value: alongX ? 1.0 : 0.0 },
+    },
+    vertexShader: /* glsl */ `
+      varying vec3 vWorld;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying vec3 vWorld;
+      uniform float uCell, uSection, uFadeDist, uWallH, uAlongX;
+      uniform vec3 uCellColor, uSectionColor, uFocus;
+      float gridLine(vec2 p, float size) {
+        vec2 r = p / size;
+        vec2 g = abs(fract(r - 0.5) - 0.5) / fwidth(r);
+        return 1.0 - min(min(g.x, g.y), 1.0);
+      }
+      void main() {
+        // Wall surface coords: the in-plane horizontal world axis + height.
+        float h = mix(vWorld.z, vWorld.x, uAlongX);
+        vec2 p = vec2(h, vWorld.y);
+        float cell = gridLine(p, uCell);
+        float section = gridLine(p, uSection);
+        float d = distance(vWorld.xz, uFocus.xz);
+        float fade = pow(clamp(1.0 - d / uFadeDist, 0.0, 1.0), 1.6);
+        float vert = 1.0 - clamp(vWorld.y / uWallH, 0.0, 1.0);
+        vec3 col = mix(uCellColor, uSectionColor, section);
+        float alpha = max(section * 0.7, cell * 0.45) * fade * (0.3 + 0.7 * vert);
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  });
+}
+const wallMats = [];
+{
+  const wallLen = 2 * (ARENA_HALF + ARENA_WALL_T);
+  // (three coords: MJCF x -> x, MJCF y -> -z; walls sit at their inner faces)
+  const wallDefs = [
+    { x: ARENA_HALF, z: 0, rotY: -Math.PI / 2, alongX: false },
+    { x: -ARENA_HALF, z: 0, rotY: Math.PI / 2, alongX: false },
+    { x: 0, z: ARENA_HALF, rotY: Math.PI, alongX: true },
+    { x: 0, z: -ARENA_HALF, rotY: 0, alongX: true },
+  ];
+  for (const w of wallDefs) {
+    const mat = makeWallGridMaterial(w.alongX);
+    wallMats.push(mat);
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(wallLen, ARENA_WALL_H), mat);
+    mesh.position.set(w.x, ARENA_WALL_H / 2, w.z);
+    mesh.rotation.y = w.rotY;
+    scene.add(mesh);
+  }
+}
+
 const rig = await rigPromise;
 scene.add(rig.placer);
 const trunkGroup = rig.bodies.get("trunk_base");
 
-// Soccer-ball look on an equirectangular CanvasTexture: off-white base
-// (pure white would blow out under ACES tone mapping) with black
-// pentagons - a cap at each pole plus two staggered rings - so the
-// rolling actually reads visually.
+// Soccer-ball look computed per pixel on the sphere itself, so there is
+// no pole or seam special case by design. The truncated icosahedron is
+// reconstructed as a spherical Voronoi diagram over 32 sites: the 12
+// icosahedron vertices (black pentagon centers, one sitting at each
+// pole) and its 20 face centers (white hexagon centers). A pixel is
+// black when its nearest site is a pentagon center and it sits clear of
+// the cell boundary by a seam margin - which yields big flat-edged black
+// pentagons separated from the white hexagons by thin seams, corners
+// almost touching, exactly like the real panel layout.
 function makeSoccerBallTexture() {
+  const W = 1024, H = 512;
   const c = document.createElement("canvas");
-  c.width = 1024;
-  c.height = 512;
+  c.width = W;
+  c.height = H;
   const ctx = c.getContext("2d");
-  ctx.fillStyle = "#e9e7e0";
-  ctx.fillRect(0, 0, c.width, c.height);
-  ctx.fillStyle = "#17171d";
-  // Pole "pentagons": a full-width strip at each canvas edge maps to a
-  // clean round patch at the pole, sidestepping the equirect pinch that
-  // would smear an actual drawn polygon there.
-  const capH = c.height * 0.075;
-  ctx.fillRect(0, 0, c.width, capH);
-  ctx.fillRect(0, c.height - capH, c.width, capH);
-  // Pentagon at (lon, lat), angular radius r (all degrees). Horizontal
-  // extent is stretched by 1/cos(lat) to counter the equirect longitude
-  // compression away from the equator; drawn three times so panels
-  // crossing the +-180 deg seam wrap around cleanly.
-  const pent = (lonDeg, latDeg, rDeg, rot) => {
-    const x = ((lonDeg + 180) / 360) * c.width;
-    const y = ((90 - latDeg) / 180) * c.height;
-    const ry = (rDeg / 180) * c.height;
-    const rx = ry / Math.cos((latDeg * Math.PI) / 180);
-    for (const dx of [-c.width, 0, c.width]) {
-      ctx.beginPath();
-      for (let i = 0; i < 5; i++) {
-        const a = rot + (i * 2 * Math.PI) / 5;
-        const px = x + dx + Math.cos(a) * rx;
-        const py = y + Math.sin(a) * ry;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fill();
-    }
+  // 12 icosahedron vertices: 2 poles + two staggered rings of 5 at
+  // latitude +-atan(1/2) (~26.57 deg) - the pentagon centers.
+  const sites = [];
+  const addSite = (v, isPent) => {
+    const n = Math.hypot(v[0], v[1], v[2]);
+    sites.push({ x: v[0] / n, y: v[1] / n, z: v[2] / n, pent: isPent });
   };
-  // Two staggered rings of five (12 pentagons total with the poles),
-  // roughly the truncated-icosahedron layout. Point-up above the
-  // equator, point-down below, like the real panel orientation.
+  const verts = [[0, 0, 1], [0, 0, -1]];
+  const latR = Math.atan(0.5), cr = Math.cos(latR), sr = Math.sin(latR);
   for (let i = 0; i < 5; i++) {
-    pent(-180 + i * 72, 27, 15, -Math.PI / 2);
-    pent(-144 + i * 72, -27, 15, Math.PI / 2);
+    const a = (i * 72 * Math.PI) / 180;
+    const b = ((i * 72 + 36) * Math.PI) / 180;
+    verts.push([cr * Math.cos(a), cr * Math.sin(a), sr]);
+    verts.push([cr * Math.cos(b), cr * Math.sin(b), -sr]);
   }
+  for (const v of verts) addSite(v, true);
+  // 20 face centers (hexagon centers): normalized centroids of every
+  // mutually-adjacent vertex triple (adjacent pairs have dot = 1/sqrt(5)).
+  const adj = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2] > 0.3;
+  for (let i = 0; i < 12; i++) {
+    for (let j = i + 1; j < 12; j++) {
+      if (!adj(verts[i], verts[j])) continue;
+      for (let k = j + 1; k < 12; k++) {
+        if (adj(verts[i], verts[k]) && adj(verts[j], verts[k])) {
+          addSite([
+            verts[i][0] + verts[j][0] + verts[k][0],
+            verts[i][1] + verts[j][1] + verts[k][1],
+            verts[i][2] + verts[j][2] + verts[k][2],
+          ], false);
+        }
+      }
+    }
+  }
+  // Seam half-width and anti-alias band, in radians of arc.
+  const SEAM = (1.6 * Math.PI) / 180;
+  const AA = (0.35 * Math.PI) / 180;
+  const BG = [233, 231, 224], INK = [23, 23, 29], STITCH = [200, 197, 188];
+  const img = ctx.createImageData(W, H);
+  const px = img.data;
+  for (let row = 0; row < H; row++) {
+    const lat = Math.PI / 2 - ((row + 0.5) / H) * Math.PI;
+    const cl = Math.cos(lat), sl = Math.sin(lat);
+    for (let col = 0; col < W; col++) {
+      const lon = ((col + 0.5) / W) * 2 * Math.PI - Math.PI;
+      const dx = cl * Math.cos(lon), dy = cl * Math.sin(lon), dz = sl;
+      let best = -2, second = -2, bestPent = false;
+      for (const s of sites) {
+        const d = dx * s.x + dy * s.y + dz * s.z;
+        if (d > best) { second = best; best = d; bestPent = s.pent; }
+        else if (d > second) second = d;
+      }
+      // Signed distance to the Voronoi cell boundary along the geodesic.
+      const halfGap = (Math.acos(Math.min(1, second)) - Math.acos(Math.min(1, best))) / 2;
+      // Black panel: inside a pentagon cell, clear of the seam margin.
+      const black = bestPent ? Math.min(1, Math.max(0, (halfGap - SEAM) / AA)) : 0;
+      // Subtle stitch line on every remaining cell boundary so the white
+      // hexagons read as panels too.
+      const stitch = Math.min(1, Math.max(0, 1 - halfGap / (SEAM * 0.6))) * (1 - black);
+      const o = (row * W + col) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const base = BG[ch] + (STITCH[ch] - BG[ch]) * stitch;
+        px[o + ch] = base + (INK[ch] - base) * black;
+      }
+      px[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   // Texel footprints get extremely anamorphic near the UV poles; without
@@ -703,9 +849,11 @@ function syncRig() {
   _follow.copy(_target).sub(controls.target).multiplyScalar(0.06);
   controls.target.add(_follow);
   camera.position.add(_follow);
-  // Keep the grid plane (and its fade center) under the action.
+  // Keep the grid plane (and its fade center) under the action; the wall
+  // grids share the same radial fade focus.
   grid.position.set(controls.target.x, 0, controls.target.z);
   grid.material.uniforms.uFocus.value.copy(controls.target);
+  for (const m of wallMats) m.uniforms.uFocus.value.copy(controls.target);
 }
 
 // Quack: a quick jaw flap on every mode/colour change. The jaw isn't a
@@ -762,8 +910,8 @@ const boxMove = dotMove.parentElement, boxTurn = dotTurn.parentElement;
 const keyEls = {
   fwd: el("key-fwd"), back: el("key-back"),
   turnl: el("key-turnl"), turnr: el("key-turnr"),
-  left: el("key-left"), right: el("key-right"),
-    roll: el("key-roll"), reset: el("key-reset"), kick: el("key-kick"),
+    roll: el("key-roll"), reset: el("key-reset"),
+    kickl: el("key-kickl"), kickr: el("key-kickr"),
     ball: el("key-ball"), cam: el("key-cam"),
     padX: el("key-pad-x"), padSit: el("key-pad-sit"),
     padRun: el("key-pad-run"), padRt: el("key-pad-rt"),
@@ -776,7 +924,7 @@ let ballFlashAt = -Infinity;
 let padYFlashAt = -Infinity;
 
 function renderStats() {
-  const [vx, vy, wz] = effectiveCmd();
+  const [vx, , wz] = effectiveCmd();
   // The active policy lives in the big center label and the twist in the
   // mini sticks; up here only the bare telemetry remains.
   const peers = ghosts?.peerCount() ?? 0;
@@ -788,19 +936,21 @@ function renderStats() {
   // user is actually driving.
   const manual = (padActive || held.size > 0) && mode !== "roll";
   const yN = vx >= 0 ? vx / VEL_FWD : vx / -VEL_BACK;
-  dotMove.style.transform = `translate(${(-vy / VEL_LAT) * STICK_R}px, ${-yN * STICK_R}px)`;
+  // Move stick is vertical-only now that strafe is gone.
+  dotMove.style.transform = `translate(0px, ${-yN * STICK_R}px)`;
   dotTurn.style.transform = `translate(${(-wz / VEL_ANG) * STICK_R}px, 0px)`;
-  boxMove.classList.toggle("live", manual && (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01));
+  boxMove.classList.toggle("live", manual && Math.abs(vx) > 0.01);
   boxTurn.classList.toggle("live", manual && Math.abs(wz) > 0.01);
 
   // Keycap highlighting: each individual key lights only while its own
   // action is active, and only for its own input device.
   const sitting = mode === "sitstand" && sitFlag === 1;
-  for (const k of ["fwd", "back", "turnl", "turnr", "left", "right"]) {
+  for (const k of ["fwd", "back", "turnl", "turnr"]) {
     keyEls[k].classList.toggle("lit", held.has(k));
   }
   keyEls.roll.classList.toggle("lit", mode === "roll" && rollSource === "kb");
-  keyEls.kick.classList.toggle("lit", isKick() && kickSource === "kb");
+  keyEls.kickl.classList.toggle("lit", mode === "kickL" && kickSource === "kb");
+  keyEls.kickr.classList.toggle("lit", mode === "kickR" && kickSource === "kb");
   keyEls.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
   keyEls.ball.classList.toggle("lit", performance.now() - ballFlashAt < 400);
   keyEls.cam.classList.toggle("lit", chaseCam); // steady while chasing
@@ -837,33 +987,28 @@ loop();
 // ── Input: hold-to-command keys + HUD buttons ───────────────────────────
 function refreshVelCmd() {
   velCmd[0] = held.has("fwd") ? VEL_FWD : held.has("back") ? VEL_BACK : 0;
-  velCmd[1] = held.has("left") ? VEL_LAT : held.has("right") ? -VEL_LAT : 0;
   velCmd[2] = held.has("turnl") ? VEL_ANG : held.has("turnr") ? -VEL_ANG : 0;
 }
 
 // e.code is physical position, so one map covers QWERTY and AZERTY:
-// WASD/ZQSD run + turn, the physical Q/E row (A/E on AZERTY) strafes.
+// arrows / WASD (ZQSD) run + turn. No strafe.
 const KEYMAP = {
   ArrowUp: "fwd", KeyW: "fwd",
   ArrowDown: "back", KeyS: "back",
   ArrowLeft: "turnl", KeyA: "turnl",
   ArrowRight: "turnr", KeyD: "turnr",
-  KeyQ: "left", KeyE: "right",
 };
 
-// Keyboard kicks alternate feet (the pad picks explicitly via RB/LB).
-let kickNextLeft = false;
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
-  if (e.code === "KeyR") { resetSim(); resetFlashAt = performance.now(); return; }
+  if (e.code === "Space") { e.preventDefault(); resetSim(); resetFlashAt = performance.now(); return; }
   if (e.code === "KeyB") { spawnBall(); ballFlashAt = performance.now(); return; }
   if (e.code === "KeyC") { chaseCam = !chaseCam; return; }
-  if (e.code === "Space") { e.preventDefault(); triggerRoll(); return; }
-  if (e.code === "KeyF") {
-    e.preventDefault();
-    if (triggerKick(kickNextLeft ? "left" : "right")) kickNextLeft = !kickNextLeft;
-    return;
-  }
+  if (e.code === "KeyR") { triggerRoll(); return; }
+  // Physical Q/E (A/E on AZERTY): explicit left / right kick, mirroring
+  // the pad's LB / RB.
+  if (e.code === "KeyQ") { triggerKick("left"); return; }
+  if (e.code === "KeyE") { triggerKick("right"); return; }
   const act = KEYMAP[e.code];
   if (!act) return;
   e.preventDefault();
@@ -893,17 +1038,19 @@ pollPad = function pollGamepad() {
     if (padActive) { padActive = false; padCmd.fill(0); padJaw = 0; }
     return;
   }
-  const lx = dz(gp.axes[0] ?? 0), ly = dz(gp.axes[1] ?? 0), rx = dz(gp.axes[2] ?? 0);
+  // Left stick only: vertical = forward/back, horizontal = turn.
+  // (No strafe; the right stick no longer drives movement.)
+  const lx = dz(gp.axes[0] ?? 0), ly = dz(gp.axes[1] ?? 0);
   const up = -ly; // browser sticks report up as -1
   const target = [
     up >= 0 ? up * VEL_FWD : up * -VEL_BACK,
-    -lx * VEL_LAT,
-    -rx * VEL_ANG,
+    0,
+    -lx * VEL_ANG,
   ];
   for (let i = 0; i < 3; i++) padCmd[i] += PAD_ALPHA * (target[i] - padCmd[i]);
   // Sticks grab command authority on first input, release when back at rest
   // (then the keyboard takes over again).
-  const stickInput = lx !== 0 || ly !== 0 || rx !== 0;
+  const stickInput = lx !== 0 || ly !== 0;
   if (stickInput) padActive = true;
   else if (padActive && Math.abs(padCmd[0]) + Math.abs(padCmd[1]) + Math.abs(padCmd[2]) < 0.01) {
     padActive = false;
@@ -1085,7 +1232,9 @@ window.rl = {
   get sitFlag() { return sitFlag; },
   buildObs, cmd,
   velCmd, lastAction, resetSim,
-  spawnBall,
+  spawnBall, triggerKick, sessions, ort,
+  get kickSteps() { return KICK_STEPS; },
+  set kickSteps(v) { KICK_STEPS = v; },
   get ballActive() { return ballActive; },
   get ballQposAdr() { return ballQposAdr; },
   get chaseCam() { return chaseCam; },
