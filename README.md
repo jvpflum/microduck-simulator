@@ -30,7 +30,7 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 - Arrow up / down: forward / back
 - Arrow left / right: turn
 - A / E: strafe
-- Space: roulade (one roll, then back to running)
+- Space: roll (one barrel roll, then back to running)
 - R: reset
 - Drag to orbit, scroll to zoom
 - Colour dots: repaint the duck (it quacks)
@@ -41,7 +41,7 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 
 - Left stick: forward / back + strafe
 - Right stick: turn
-- X: roulade
+- X: roll
 - D-pad down: sit / stand toggle
 - Right trigger: mouth (analog) + quack
 

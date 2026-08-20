@@ -73,7 +73,7 @@
         display: flex;
         flex-direction: column;
         align-items: flex-start;
-        gap: 0.7rem;
+        gap: 0.45rem;
         pointer-events: auto;
       }
       #hud .row {
@@ -102,6 +102,30 @@
         border-color: #ffc61e;
         color: #08080c;
       }
+      /* Current-state label: quiet line above the telemetry, slot-machine
+         roll on change */
+      .mode {
+        position: relative;
+        overflow: hidden;
+        height: 1.2em;
+        min-width: 8ch;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: rgba(255, 210, 63, 0.8);
+        text-align: right;
+      }
+      .mode .mode-text {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        line-height: 1.2;
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
+      }
+      .mode .mode-text.in { transform: translateY(130%); opacity: 0; }
+      .mode .mode-text.out { transform: translateY(-130%); opacity: 0; }
       /* Colour swatches */
       #swatches { gap: 0.6rem; }
       #swatches button {
@@ -124,14 +148,91 @@
         line-height: 1.9;
         pointer-events: auto;
       }
-      #hud .keys b { color: rgba(255, 255, 255, 0.75); font-weight: 600; }
+      /* Corner group captions */
+      #hud .caption {
+        display: block;
+        font-size: 0.55rem;
+        font-weight: 600;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.28);
+      }
+      #hud .keys .caption { margin-bottom: 0.45rem; }
+      /* Keycap chips in the hints */
+      #hud .keys .key {
+        display: inline-block;
+        min-width: 1.5em;
+        padding: 0.12em 0.4em;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-bottom-width: 2px;
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 0.62rem;
+        font-weight: 600;
+        line-height: 1.35;
+        text-align: center;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      #hud .keys .hint.lit { color: var(--yellow); }
+      #hud .keys .hint.lit .key {
+        background: var(--yellow);
+        border-color: var(--yellow);
+        color: var(--ink);
+      }
       #pad-hint { display: none; }
       body.pad-connected #pad-hint { display: inline; }
-      #stats {
+      /* Mini command sticks: dot = the twist the policy actually receives */
+      #sticks {
+        display: flex;
+        gap: 0.7rem;
+        justify-content: flex-end;
+        margin-bottom: 0.5rem;
+      }
+      .stickwrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.15rem;
+      }
+      .stickwrap span {
+        font-size: 0.55rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.3);
+        line-height: 1;
+      }
+      .stickbox {
+        position: relative;
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .stickdot {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        margin: -6px 0 0 -6px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.35);
+        transition: background 0.15s ease;
+      }
+      .stickbox.live .stickdot { background: var(--yellow); }
+      #stats-wrap {
         position: fixed;
         top: 1.4rem;
         right: 1.6rem;
         z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0.15rem;
+      }
+      #stats {
         font-size: 0.68rem;
         letter-spacing: 0.08em;
         text-align: right;
@@ -139,7 +240,6 @@
         line-height: 1.7;
         font-variant-numeric: tabular-nums;
       }
-      #stats b { color: var(--yellow); font-weight: 600; }
       @media (max-width: 700px) {
         #hud { flex-direction: column; align-items: flex-start; }
         #hud .keys { display: none; }
@@ -154,20 +254,39 @@
       <b>Microduck</b> &middot; real trained policies<br />
       <span class="sub">MuJoCo + ONNX, live in your browser</span>
     </div>
-    <div id="stats"></div>
+    <div id="stats-wrap">
+      <div class="mode" id="mode-label"><span class="mode-text">Run</span></div>
+      <div id="stats"></div>
+    </div>
     <div id="hud" hidden>
       <div class="stack">
-        <div class="row">
-          <button id="btn-walk" class="on">Run</button>
-          <button id="btn-sit">Sit</button>
-          <button id="btn-roulade">Roulade</button>
-        </div>
+        <span class="caption">Colour</span>
         <div class="row" id="swatches"></div>
       </div>
       <div class="keys">
-        <b>&uarr;/&darr;</b> forward / back &nbsp; <b>&larr;/&rarr;</b> turn &nbsp; <b>A/E</b> strafe<br />
-        <b>Space</b> roulade &nbsp; <b>R</b> reset &nbsp; drag to orbit &nbsp; scroll to zoom<br />
-        <span id="pad-hint">gamepad: sticks move &nbsp; <b>X</b> roulade &nbsp; <b>&dArr;</b> sit &nbsp; <b>RT</b> quack</span>
+        <span class="caption">Controls</span>
+        <div id="sticks">
+          <div class="stickwrap">
+            <div class="stickbox"><div class="stickdot" id="dot-move"></div></div>
+            <span>move</span>
+          </div>
+          <div class="stickwrap">
+            <div class="stickbox"><div class="stickdot" id="dot-turn"></div></div>
+            <span>turn</span>
+          </div>
+        </div>
+        <span class="hint" id="hint-move"><span class="key">&uarr;</span><span class="key">&darr;</span> move</span> &nbsp;
+        <span class="hint" id="hint-turn"><span class="key">&larr;</span><span class="key">&rarr;</span> turn</span> &nbsp;
+        <span class="hint" id="hint-strafe"><span class="key">A</span><span class="key">E</span> strafe</span><br />
+        <span class="hint" id="hint-roulade"><span class="key">Space</span> roll</span> &nbsp;
+        <span class="hint" id="hint-reset"><span class="key">R</span> reset</span> &nbsp;
+        drag to orbit &middot; scroll to zoom<br />
+        <span id="pad-hint">gamepad:
+          <span class="hint" id="hint-pad-x"><span class="key">X</span> roll</span> &nbsp;
+          <span class="hint" id="hint-pad-sit"><span class="key">&dArr;</span> sit</span> &nbsp;
+          <span class="hint" id="hint-pad-run"><span class="key">&uArr;</span> run</span> &nbsp;
+          <span class="hint" id="hint-pad-rt"><span class="key">RT</span> quack</span>
+        </span>
       </div>
     </div>
     <div id="loading">Compiling physics&hellip;</div>
@@ -184,9 +303,10 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
+      const V = "3"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
-      const suffix = sign ? `?__sign=${encodeURIComponent(sign)}` : "";
-      import(`./rl.js${suffix}`);
+      const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
+      import(`./rl.js?v=${V}${suffix}`);
     </script>
   </body>
 </html>

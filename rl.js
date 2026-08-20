@@ -193,15 +193,27 @@ const velCmd = new Float32Array(3); // twist command, driven by held keys
 // the control loop reads it before the input section below has evaluated.
 const padCmd = new Float32Array(3);
 let padActive = false;
+const padPrev = { x: false, dpadDown: false, dpadUp: false, rt: 0 };
 // Declared before the control loop starts: buildObs checks it to decide
 // between the auto-run default and manual key control.
 const held = new Set();
 
 let mode = "walk"; // "walk" | "sitstand" | "roulade"
 let sitFlag = 0;
+
+// The twist the policy actually receives: live gamepad sticks win, held
+// keys next, and idle input in walk mode means auto-run forward. Shared by
+// buildObs and the HUD mini-sticks so they can never disagree.
+const AUTO_CMD = new Float32Array([VEL_FWD, 0, 0]);
+function effectiveCmd() {
+  if (padActive) return padCmd;
+  if (mode === "walk" && !held.size) return AUTO_CMD;
+  return velCmd;
+}
 // One-shot roulade tracking: trigger time + whether the trunk actually
 // tipped over yet. Set by triggerRoulade, cleared when we hand back to walk.
 let rouladeRun = null;
+let rouladeSource = "kb"; // which hint lights up: keyboard Space or pad X
 
 function resetSim() {
   mujoco.mj_resetDataKeyframe(model, data, standKeyId);
@@ -234,15 +246,9 @@ function buildObs() {
   // posture flag. "Run" means run: with no keys held the walking policy
   // gets a forward velocity by default, keys override it.
   cmd.fill(0, 0, 3);
-  if (mode === "walk") {
-    if (padActive) {
-      cmd[0] = padCmd[0]; cmd[1] = padCmd[1]; cmd[2] = padCmd[2];
-    } else {
-      cmd[0] = held.size ? velCmd[0] : VEL_FWD;
-      cmd[1] = velCmd[1]; cmd[2] = velCmd[2];
-    }
-  } else if (mode === "roulade") {
-    cmd[0] = velCmd[0]; cmd[1] = velCmd[1]; cmd[2] = velCmd[2];
+  if (mode === "walk" || mode === "roulade") {
+    const c = effectiveCmd();
+    cmd[0] = c[0]; cmd[1] = c[1]; cmd[2] = c[2];
   } else {
     cmd[0] = sitFlag;
   }
@@ -451,24 +457,66 @@ function syncRig() {
 const QUACK_MS = 480;
 let quackAt = -Infinity;
 let padJaw = 0;
-const quack = () => { quackAt = performance.now(); };
+// Same sound as the robot: the runtime plays its voice-bank chirp on every
+// mouth-open edge and falls back to the stock quack.wav — the only audio
+// asset in the repo, so that's what we ship. Restarting playback on each
+// trigger matches the runtime's "cut off any still-playing sound".
+// Browsers block audio until the first user gesture; the rejected play()
+// is swallowed and sound simply starts working after the first click/key.
+const quackSound = new Audio(signed("./assets/quack.wav"));
+quackSound.volume = 0.7;
+const quack = () => {
+  quackAt = performance.now();
+  quackSound.currentTime = 0;
+  quackSound.play().catch(() => {});
+};
 function syncJaw() {
   const t = (performance.now() - quackAt) / QUACK_MS;
   const flap = t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0;
   setJawOpen(rig, Math.max(flap, padJaw));
 }
 
+// HUD elements for the mini command sticks + hint highlighting.
+const el = (id) => document.getElementById(id);
+const dotMove = el("dot-move"), dotTurn = el("dot-turn");
+const boxMove = dotMove.parentElement, boxTurn = dotTurn.parentElement;
+const hints = {
+  move: el("hint-move"), turn: el("hint-turn"), strafe: el("hint-strafe"),
+  roulade: el("hint-roulade"), reset: el("hint-reset"),
+  padX: el("hint-pad-x"), padSit: el("hint-pad-sit"),
+  padRun: el("hint-pad-run"), padRt: el("hint-pad-rt"),
+};
+const STICK_R = 15; // px, max dot travel inside the 46px stick circle
+let resetFlashAt = -Infinity;
+
 function renderStats() {
-  const [vx, vy, wz] = padActive ? padCmd : velCmd;
-  const posture = mode === "walk"
-    ? `running policy`
-    : mode === "roulade"
-      ? `roulade policy`
-      : `sitstand policy \u00b7 ${sitFlag ? "sit" : "stand"}`;
-  statsEl.innerHTML =
-    `<b>${posture}</b><br>` +
-    `cmd vx ${vx.toFixed(2)} \u00b7 vy ${vy.toFixed(2)} \u00b7 wz ${wz.toFixed(2)}<br>` +
+  const [vx, vy, wz] = effectiveCmd();
+  // The active policy lives in the big center label and the twist in the
+  // mini sticks; up here only the bare telemetry remains.
+  statsEl.textContent =
     `ctrl ${ctrlHz.toFixed(0)} Hz \u00b7 sim t ${data.time.toFixed(1)} s`;
+
+  // Mini sticks: the dot mirrors the effective twist (auto-run shows as a
+  // resting dot at the top), lit yellow while the user is actually driving.
+  const manual = padActive || held.size > 0;
+  const yN = vx >= 0 ? vx / VEL_FWD : vx / -VEL_BACK;
+  dotMove.style.transform = `translate(${(-vy / VEL_LAT) * STICK_R}px, ${-yN * STICK_R}px)`;
+  dotTurn.style.transform = `translate(${(-wz / VEL_ANG) * STICK_R}px, 0px)`;
+  boxMove.classList.toggle("live", manual && (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01));
+  boxTurn.classList.toggle("live", manual && Math.abs(wz) > 0.01);
+
+  // Hint highlighting: each hint lights only for its own input device, so
+  // driving with the gamepad doesn't light up the keyboard row.
+  const sitting = mode === "sitstand" && sitFlag === 1;
+  hints.move.classList.toggle("lit", held.has("fwd") || held.has("back"));
+  hints.strafe.classList.toggle("lit", held.has("left") || held.has("right"));
+  hints.turn.classList.toggle("lit", held.has("turnl") || held.has("turnr"));
+  hints.roulade.classList.toggle("lit", mode === "roulade" && rouladeSource === "kb");
+  hints.reset.classList.toggle("lit", performance.now() - resetFlashAt < 400);
+  hints.padX.classList.toggle("lit", mode === "roulade" && rouladeSource === "pad");
+  hints.padSit.classList.toggle("lit", sitting);
+  hints.padRun.classList.toggle("lit", padPrev.dpadUp);
+  hints.padRt.classList.toggle("lit", padJaw > 0.3);
 }
 
 // Real implementation assigned in the gamepad section below; the render
@@ -504,7 +552,7 @@ const KEYMAP = {
 
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
-  if (e.code === "KeyR") { resetSim(); return; }
+  if (e.code === "KeyR") { resetSim(); resetFlashAt = performance.now(); return; }
   if (e.code === "Space") { e.preventDefault(); triggerRoulade(); return; }
   const act = KEYMAP[e.code];
   if (!act) return;
@@ -523,10 +571,9 @@ window.addEventListener("blur", () => { held.clear(); refreshVelCmd(); });
 // ── Gamepad: same mapping as the robot runtime (microduck_runtime) ──────
 // Sticks: L vertical = vx (asymmetric fwd/back), L horizontal = strafe,
 // R horizontal = turn, all EMA-smoothed like the runtime's cmd_alpha.
-// X = roulade, DpadDown = sit/stand toggle, RT = mouth (analog) + quack.
+// X = roulade, DpadDown = sit/stand, DpadUp = back to run, RT = mouth.
 const PAD_DEADZONE = 0.15;
 const PAD_ALPHA = 0.12;
-const padPrev = { x: false, dpadDown: false, rt: 0 };
 const dz = (v) => (Math.abs(v) < PAD_DEADZONE ? 0 : v);
 
 pollPad = function pollGamepad() {
@@ -555,7 +602,7 @@ pollPad = function pollGamepad() {
 
   // Standard mapping indices: X=2, DpadDown=13, RT=7 (analog value).
   const x = !!gp.buttons[2]?.pressed;
-  if (x && !padPrev.x) triggerRoulade();
+  if (x && !padPrev.x) triggerRoulade("pad");
   padPrev.x = x;
 
   const dpadDown = !!gp.buttons[13]?.pressed;
@@ -565,15 +612,24 @@ pollPad = function pollGamepad() {
   }
   padPrev.dpadDown = dpadDown;
 
+  // DpadUp: straight back to running. Ignored mid-roulade (it hands back
+  // to walk on its own, and switching on a tipped duck would floor it).
+  const dpadUp = !!gp.buttons[12]?.pressed;
+  if (dpadUp && !padPrev.dpadUp && mode !== "walk" && mode !== "roulade") setMode("walk");
+  padPrev.dpadUp = dpadUp;
+
+  // Triggers drive the mouth like the runtime (max of both), and the right
+  // one quacks on its rising edge — same as the robot's chirp.
   const rt = gp.buttons[7]?.value ?? 0;
-  padJaw = rt;
+  const lt = gp.buttons[6]?.value ?? 0;
+  padJaw = Math.max(rt, lt);
   if (padPrev.rt < 0.3 && rt >= 0.3) quack();
   padPrev.rt = rt;
 };
 
-const btnWalk = document.getElementById("btn-walk");
-const btnSit = document.getElementById("btn-sit");
-const btnRoulade = document.getElementById("btn-roulade");
+// Read-only state label (bottom-left): reflects the active policy,
+// switching happens via keyboard/gamepad only.
+const modeLabel = document.getElementById("mode-label");
 
 function setMode(next) {
   quack();
@@ -606,23 +662,36 @@ function setMode(next) {
 // lastAction is deliberately NOT zeroed here: the robot runtime keeps one
 // continuous action history across policy switches, and the roll initiates
 // more reliably mid-gait with the true last actions in the obs.
-function triggerRoulade() {
+function triggerRoulade(source = "kb") {
   if (mode === "roulade") return;
+  rouladeSource = source;
   quack();
   mode = "roulade";
   sitFlag = 0;
   rouladeRun = { steps: 0, tipped: false };
   syncButtons();
 }
+// Slot-machine roll: the old text slides up and out while the new one
+// rises in from below the (overflow-hidden) label box.
+function setModeLabel(text) {
+  const cur = modeLabel.lastElementChild;
+  if (cur && cur.textContent === text) return;
+  const next = document.createElement("span");
+  next.className = "mode-text in";
+  next.textContent = text;
+  modeLabel.appendChild(next);
+  void next.offsetWidth; // flush layout so the transition actually plays
+  if (cur) {
+    cur.classList.add("out");
+    setTimeout(() => cur.remove(), 350);
+  }
+  next.classList.remove("in");
+}
+
 function syncButtons() {
   const sitting = mode === "sitstand" && sitFlag === 1;
-  btnWalk.classList.toggle("on", mode === "walk" || (mode === "sitstand" && !sitting));
-  btnSit.classList.toggle("on", sitting);
-  btnRoulade.classList.toggle("on", mode === "roulade");
+  setModeLabel(mode === "roulade" ? "Roll" : sitting ? "Sit" : "Run");
 }
-btnWalk.addEventListener("click", () => setMode("walk"));
-btnSit.addEventListener("click", () => setMode("sit"));
-btnRoulade.addEventListener("click", triggerRoulade);
 
 // ── Colour swatches: re-skin the rig live, with a quack ─────────────────
 // One representative colour per variant so the dots read at a glance.
