@@ -31,6 +31,7 @@ import {
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
+  JUKEBOX_H, JUKEBOX_MARGIN, JUKEBOX_YAW, JUKEBOX_HALF,
 } from "./constants.js";
 import {
   buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION,
@@ -174,6 +175,20 @@ async function boot({ scene, camera, renderer }) {
         el("geom", { name: w.name, type: "box", pos: w.pos, size: w.size }),
       );
     }
+    // Jukebox corner prop: one static box matching the visual's footprint
+    // so the duck and ball can't clip through it. Visual placement is in
+    // three.js coords (x, 0, z) with rotation.y = yaw; MJCF is z-up with
+    // x -> x, y -> -z and the same yaw angle.
+    const jOff = ARENA_HALF - JUKEBOX_MARGIN;
+    const jw = Math.cos(JUKEBOX_YAW / 2), jz = Math.sin(JUKEBOX_YAW / 2);
+    doc.querySelector("worldbody").appendChild(
+      el("geom", {
+        name: "jukebox", type: "box",
+        pos: `${-jOff} ${jOff} ${JUKEBOX_H / 2}`,
+        quat: `${jw} 0 0 ${jz}`,
+        size: JUKEBOX_HALF.join(" "),
+      }),
+    );
     // Kickable ball: a light free sphere (beach-ball feel). MuJoCo has no
     // restitution parameter - the bounce comes from solref damping < 1, and
     // the rolling-friction term makes it come to rest. Appended AFTER the
@@ -728,14 +743,13 @@ async function boot({ scene, camera, renderer }) {
     THREE, scene, camera, renderer, fxModule: fx, mesh: ballMesh, group: ballGroup,
   });
 
-  // ── Jukebox prop (decorative corner dressing, no physics) ────────────
+  // ── Jukebox prop (corner dressing + static collision box) ───────────
   // assets/props/jukebox.glb carries two meshes exported from Blender: the
   // ~39k-tri render mesh and a 500-tri "jukebox_wire" stand-in used only by
   // the hologram pass (same fxWireGeometry escape hatch as the ball). It
   // materializes with the duck's ceremony, staggered a beat behind, and
-  // replays on every respawn.
-  const JUKEBOX_H = 0.42; // target height, m
-  const JUKEBOX_MARGIN = 0.24; // center distance from each wall inner face
+  // replays on every respawn. Physics-side, buildPhysicsXml plants a
+  // matching static box (constants JUKEBOX_*) so it can't be clipped.
   let jukeboxGroup = null;
   try {
     const gltf = await new GLTFLoader().loadAsync(
@@ -758,7 +772,7 @@ async function boot({ scene, camera, renderer }) {
     jukeGroup.position.set(
       -(ARENA_HALF - JUKEBOX_MARGIN), 0, -(ARENA_HALF - JUKEBOX_MARGIN),
     );
-    jukeGroup.rotation.y = Math.PI / 4;
+    jukeGroup.rotation.y = JUKEBOX_YAW;
     scene.add(jukeGroup);
     jukeboxGroup = jukeGroup;
     const jukeFx = fx.createWireframeFx();
