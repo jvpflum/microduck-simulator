@@ -620,8 +620,17 @@
         transition: opacity 0.35s ease, background 0.4s ease;
       }
       #welcome.closing { opacity: 0; pointer-events: none; }
+      /* Title-page entrance: every row fades up once, in reading order.
+         One soft ease, small travel, ~80 ms between rows - staged, not
+         showy. The brand alone adds a whisper of scale so the page opens
+         on it. Replays on every open (pause included): the modal is
+         display:none while hidden, so animations restart naturally. */
       @keyframes row-in {
-        from { transform: translateY(8px); opacity: 0; }
+        from { transform: translateY(12px); opacity: 0; }
+        to { transform: none; opacity: 1; }
+      }
+      @keyframes brand-in {
+        from { transform: translateY(10px) scale(0.94); opacity: 0; }
         to { transform: none; opacity: 1; }
       }
       #welcome .wstep {
@@ -630,13 +639,21 @@
         text-align: center;
       }
       #welcome .wstep[hidden] { display: none; }
-      #welcome .wstep > * {
-        animation: row-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+      #welcome .wstep > *,
+      #welcome .foot {
+        animation: row-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
       }
-      #welcome .wstep > :nth-child(2) { animation-delay: 0.06s; }
-      #welcome .wstep > :nth-child(3) { animation-delay: 0.12s; }
+      #welcome .wstep > :nth-child(1) { animation-name: brand-in; }
+      #welcome .wstep > :nth-child(2) { animation-delay: 0.08s; }
+      #welcome .wstep > :nth-child(3) { animation-delay: 0.16s; }
+      #welcome .wstep > :nth-child(4) { animation-delay: 0.24s; }
+      #welcome .wstep > :nth-child(5) { animation-delay: 0.32s; }
+      #welcome .wstep > :nth-child(n+6) { animation-delay: 0.4s; }
+      #welcome .wstep > .orbit-hint { animation-delay: 0.48s; }
+      #welcome .foot { animation-delay: 0.56s; }
       @media (prefers-reduced-motion: reduce) {
-        #welcome .wstep > * { animation: none; }
+        #welcome .wstep > *,
+        #welcome .foot { animation: none; }
       }
       #welcome .facts {
         display: flex;
