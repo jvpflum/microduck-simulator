@@ -76,19 +76,22 @@ export const ARCADE_D = ARCADE_H * 0.5876; // footprint depth, ~0.247 m
 export const ARCADE_GAP = 0.02; // gap between neighbouring cabinets
 export const ARCADE_WALL_GAP = 0.01; // clearance between backs and the wall
 
-// Relief terraces (prototype): grid cells that rise into plateaus when
-// toggled, adding topology to the arena. Each entry is [cx, cy, height]
-// in MJCF coords, aligned on GRID_SECTION cell centers. Two mirrored
-// two-step terraces on the side walls; the spawn cell, arena center and
-// the arcade row stay clear. Policies are blind (no terrain in the obs),
-// so raised cells act as obstacles, not walkable slopes.
-export const RELIEF_CELLS = [
-  [0, -1.2, 0.06], [0.6, -1.2, 0.12],
-  [0, 1.2, 0.06], [-0.6, 1.2, 0.12],
+// Relief (prototype): gentle cosine bumps baked into the level itself.
+// One shared analytic height function drives BOTH the physics (a MuJoCo
+// heightfield covering the arena) and the visuals (vertex displacement
+// of the grid floor shader), so the grid genuinely deforms instead of
+// boxes popping out of it. Entries are [cx, cy, height, radius] in MJCF
+// coords; slopes stay mild (max grade ~20%) so the blind walking policy
+// has a chance, and the spawn cell + arcade row stay flat.
+export const RELIEF_BUMPS = [
+  [0.3, -0.9, 0.06, 0.55],
+  [-0.9, 0.75, 0.05, 0.5],
+  [0.6, 0.9, 0.07, 0.55],
 ];
-export const RELIEF_LIP = 0.02; // extra box below the plateau top, m
-export const RELIEF_EPS = 0.005; // burial clearance under the floor plane
-export const RELIEF_SPEED = 0.25; // rise/sink rate, m/s
+export const RELIEF_HMAX = 0.07; // tallest bump, scales the hfield z-size
+export const RELIEF_GRID = 65; // hfield rows/cols over the 3x3 m arena
+export const RELIEF_SINK = 0.003; // hfield geom buried below the floor
+export const RELIEF_RATE = 0.6; // raise/sink rate, scale units per second
 
 // Spawn: center of the middle section cell in the SECOND ROW FROM THE
 // BACK wall. The duck faces +X (identity freejoint quat, walks toward

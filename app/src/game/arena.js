@@ -2,7 +2,9 @@
 // planes, ported verbatim from the pre-React rl.js. Both carry a uReveal
 // uniform for the entrance draw-in (driven by ceremony.js).
 import * as THREE from "three";
-import { ARENA_HALF, ARENA_WALL_H, ARENA_WALL_T, GRID_SECTION } from "./constants.js";
+import {
+  ARENA_HALF, ARENA_WALL_H, ARENA_WALL_T, GRID_SECTION, RELIEF_BUMPS,
+} from "./constants.js";
 
 // Infinite shader grid, ported from drei's <Grid>: anti-aliased world-space
 // lines at cell/section frequencies with a radial fade around the duck.
@@ -24,11 +26,38 @@ export function makeInfiniteGrid() {
       // Starts at 0: the world stays hidden behind the welcome modal and
       // the BIOS readout until playBios cues startEntrance.
       uReveal: { value: 0.0 },
+      // Relief: 0 = flat, 1 = bumps at full height. Driven by the game's
+      // relief toggle, mirroring the MuJoCo heightfield's z-size so the
+      // visual surface and the physics surface are the same function.
+      uTopoScale: { value: 0.0 },
+      // (cx, cz, height, radius) per bump, in three.js world coords
+      // (MJCF y -> -z done here once).
+      uBumps: {
+        value: RELIEF_BUMPS.map(
+          ([cx, cy, h, r]) => new THREE.Vector4(cx, -cy, h, r),
+        ),
+      },
     },
     vertexShader: /* glsl */ `
+      #define NBUMPS ${RELIEF_BUMPS.length}
       varying vec3 vWorld;
+      uniform float uTopoScale;
+      uniform vec4 uBumps[NBUMPS];
+      // Same analytic relief as the physics heightfield (game.js topoH):
+      // a sum of cosine bumps, displacing the grid surface itself so the
+      // floor genuinely deforms - lines flow up the slopes for free since
+      // the fragment shader draws them from world xz.
+      float topoH(vec2 p) {
+        float H = 0.0;
+        for (int i = 0; i < NBUMPS; i++) {
+          float u = distance(p, uBumps[i].xy) / uBumps[i].w;
+          if (u < 1.0) H += uBumps[i].z * (0.5 + 0.5 * cos(3.14159265 * u));
+        }
+        return H;
+      }
       void main() {
         vec4 w = modelMatrix * vec4(position, 1.0);
+        if (uTopoScale > 0.0) w.y += topoH(w.xz) * uTopoScale;
         vWorld = w.xyz;
         gl_Position = projectionMatrix * viewMatrix * w;
       }
@@ -105,7 +134,11 @@ export function makeInfiniteGrid() {
       }
     `,
   });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), material);
+  // Subdivided so the relief displacement has vertices to push: ~12 cm
+  // steps, plenty for the gentle bump radii (>= 0.5 m). The displacement
+  // is computed in world space, so the per-frame recentering under the
+  // camera target doesn't move the bumps.
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(30, 30, 256, 256), material);
   mesh.rotation.x = -Math.PI / 2;
   return mesh;
 }

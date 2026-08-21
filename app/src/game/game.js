@@ -30,9 +30,9 @@ import {
   ACTION_SCALE, TIMESTEP, DECIMATION, CTRL_DT,
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE,
-  BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y, GRID_SECTION,
+  BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
   ARCADE_H, ARCADE_W, ARCADE_D, ARCADE_GAP, ARCADE_WALL_GAP,
-  RELIEF_CELLS, RELIEF_LIP, RELIEF_EPS, RELIEF_SPEED,
+  RELIEF_BUMPS, RELIEF_HMAX, RELIEF_GRID, RELIEF_SINK, RELIEF_RATE,
 } from "./constants.js";
 import {
   buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION,
@@ -205,47 +205,35 @@ async function boot({ scene, camera, renderer }) {
     // step, like the ball). q = 0 parks the box fully below the floor;
     // q = h + RELIEF_EPS puts its top exactly at h. Appended after the
     // ball so the keyframe layout stays robot + ball + relief.
-    // The boxes overlap the floor plane by design (buried when lowered),
-    // so their contacts with the world are excluded: otherwise the floor
-    // pushes them out and fights the kinematic drive. Light mass + heavy
-    // joint damping keep them effectively rigid under the duck's weight
-    // between two qpos writes.
-    const contact = el("contact", {});
-    for (let i = 0; i < RELIEF_CELLS.length; i++) {
-      const [cx, cy, h] = RELIEF_CELLS[i];
-      const hz = (h + RELIEF_LIP) / 2;
-      const body = el("body", { name: `relief_${i}`, pos: `${cx} ${cy} 0` });
-      body.appendChild(el("joint", {
-        name: `relief_${i}`, type: "slide", axis: "0 0 1", limited: "false",
-        damping: "100",
-      }));
-      body.appendChild(el("geom", {
-        name: `relief_${i}`, type: "box", mass: "1",
-        size: `${GRID_SECTION / 2} ${GRID_SECTION / 2} ${hz}`,
-        pos: `0 0 ${-RELIEF_EPS - hz}`,
-      }));
-      doc.querySelector("worldbody").appendChild(body);
-      contact.appendChild(el("exclude", { body1: "world", body2: `relief_${i}` }));
-    }
-    root.appendChild(contact);
+    // Relief heightfield: a static hfield over the whole arena, elevation
+    // data filled at runtime from the shared analytic bump function (see
+    // driveRelief). It compiles flat (no file/elevation = zeros) and has
+    // no joints, so qpos and the keyframe are untouched. The geom sits
+    // RELIEF_SINK below the floor so a near-zero z-size is fully buried;
+    // raising the terrain = scaling model.hfield_size z at runtime.
+    doc.querySelector("asset").appendChild(el("hfield", {
+      name: "terrain", nrow: String(RELIEF_GRID), ncol: String(RELIEF_GRID),
+      size: `${ARENA_HALF} ${ARENA_HALF} ${RELIEF_HMAX} 0.1`,
+    }));
+    doc.querySelector("worldbody").appendChild(el("geom", {
+      name: "terrain", type: "hfield", hfield: "terrain",
+      pos: `0 0 ${-RELIEF_SINK}`,
+    }));
     // STAND keyframe from mjlab's scene_walk.xml. qpos must cover every
     // joint in document order: the 14 actuated hinges take DEFAULT_POSE by
     // name, anything else (the roller variant's passive wheels) starts at
     // zero. The ball's 7 free-joint values MUST be appended or nq won't
-    // match; parked 50 m away = effectively absent. Relief slides come
-    // last (they sit after the ball in document order - the selector
-    // below must skip them) and start buried at 0.
+    // match; parked 50 m away = effectively absent.
     const qposFree = `${SPAWN_X} ${SPAWN_Y} 0.12 1 0 0 0`;
     const poseByName = new Map(JOINT_NAMES.map((n, i) => [n, DEFAULT_POSE[i]]));
     const qposJoints = [...doc.querySelectorAll("body > joint")]
-      .filter((j) => !(j.getAttribute("name") || "").startsWith("relief_"))
       .map((j) => poseByName.get(j.getAttribute("name")) ?? 0)
       .join(" ");
     const pose14 = Array.from(DEFAULT_POSE).join(" ");
     const kf = doc.createElement("keyframe");
     kf.appendChild(el("key", {
       name: "STAND",
-      qpos: `${qposFree} ${qposJoints} ${BALL_PARK_POS} 1 0 0 0${" 0".repeat(RELIEF_CELLS.length)}`,
+      qpos: `${qposFree} ${qposJoints} ${BALL_PARK_POS} 1 0 0 0`,
       ctrl: pose14,
     }));
     root.appendChild(kf);
@@ -630,60 +618,51 @@ async function boot({ scene, camera, renderer }) {
     }
   }
 
-  // ── Relief terraces (prototype: toggleable grid topology) ────────────
-  // Kinematic drive: every control step each cell's slide qpos glides
-  // toward its target (raised or buried) at RELIEF_SPEED, qvel carrying
-  // the true rate so contacts push the duck/ball along instead of
-  // tunnelling. The state survives resets and loco switches: the keyframe
-  // re-buries the cells and the drive raises them back if the toggle is
-  // on. Trigger for now: window.rl.setRelief(bool) or the T key
-  // (prototype - no UI commitment yet).
+  // ── Relief (prototype: the level itself gains gentle slopes) ────────
+  // One analytic height function (cosine bumps, RELIEF_BUMPS) drives both
+  // surfaces: the MuJoCo heightfield gets it sampled into hfield_data
+  // once per compiled model, and the grid floor shader displaces its
+  // vertices with the same function (uTopoScale uniform). Raising or
+  // sinking the terrain = ramping one scalar that scales the hfield
+  // z-size and the shader uniform together, so physics and visuals stay
+  // the same surface at every moment of the transition. Trigger for now:
+  // window.rl.setRelief(bool) or the T key (prototype - no UI yet).
   let reliefOn = false;
-  const reliefAddrCache = new WeakMap();
-  function reliefAddrs(m) {
-    let a = reliefAddrCache.get(m);
-    if (!a) {
-      a = RELIEF_CELLS.map((_, i) => ({
-        q: m.jnt(`relief_${i}`).qposadr,
-        d: m.jnt(`relief_${i}`).dofadr,
-      }));
-      reliefAddrCache.set(m, a);
+  let reliefScale = 0;
+  let reliefGridMat = null; // assigned at scene wiring (grid built below)
+  const reliefFilled = new WeakSet();
+  function topoH(x, y) {
+    let H = 0;
+    for (const [cx, cy, h, r] of RELIEF_BUMPS) {
+      const u = Math.hypot(x - cx, y - cy) / r;
+      if (u < 1) H += h * (0.5 + 0.5 * Math.cos(Math.PI * u));
     }
-    return a;
+    return H;
   }
-  const reliefMeshes = RELIEF_CELLS.map(([cx, cy, h]) => {
-    const boxH = h + RELIEF_LIP;
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(GRID_SECTION, boxH, GRID_SECTION),
-      new THREE.MeshStandardMaterial({ color: 0x0d0f16, roughness: 0.9 }),
-    );
-    // Orange edge lines: reads as a holographic tile popping out of the
-    // grid, cheap and consistent with the arena DA.
-    mesh.add(new THREE.LineSegments(
-      new THREE.EdgesGeometry(mesh.geometry),
-      new THREE.LineBasicMaterial({ color: 0xff7a2f }),
-    ));
-    mesh.position.set(cx, -boxH, -cy); // buried until the drive raises it
-    mesh.visible = false;
-    scene.add(mesh);
-    return mesh;
-  });
-  function driveRelief(dt) {
-    const addrs = reliefAddrs(model);
-    const qpos = data.qpos, qvel = data.qvel;
-    for (let i = 0; i < RELIEF_CELLS.length; i++) {
-      const h = RELIEF_CELLS[i][2];
-      const hz = (h + RELIEF_LIP) / 2;
-      const target = reliefOn ? h + RELIEF_EPS : 0;
-      const prev = qpos[addrs[i].q];
-      const dq = Math.max(-RELIEF_SPEED * dt, Math.min(RELIEF_SPEED * dt, target - prev));
-      const q = prev + dq;
-      qpos[addrs[i].q] = q;
-      qvel[addrs[i].d] = dq / dt;
-      // Mirror the visual box on the physics geom (three y = MJCF z).
-      reliefMeshes[i].position.y = q - RELIEF_EPS - hz;
-      reliefMeshes[i].visible = q > RELIEF_EPS + 1e-4; // top above the floor
+  function fillHfield(m) {
+    if (reliefFilled.has(m)) return;
+    // Re-read the view on every fill: heap growth detaches TypedArrays.
+    const n = RELIEF_GRID, hdata = m.hfield_data;
+    for (let r = 0; r < n; r++) {
+      const y = -ARENA_HALF + (2 * ARENA_HALF * r) / (n - 1);
+      for (let c = 0; c < n; c++) {
+        const x = -ARENA_HALF + (2 * ARENA_HALF * c) / (n - 1);
+        hdata[r * n + c] = topoH(x, y) / RELIEF_HMAX;
+      }
     }
+    reliefFilled.add(m);
+  }
+  function driveRelief(dt) {
+    fillHfield(model); // no-op once per compiled model (legs / rollers)
+    const target = reliefOn ? 1 : 0;
+    if (reliefScale !== target) {
+      const d = Math.max(-RELIEF_RATE * dt, Math.min(RELIEF_RATE * dt, target - reliefScale));
+      reliefScale += d;
+    }
+    // z-size scales every bump; the floor keeps it strictly positive and,
+    // combined with the geom's RELIEF_SINK offset, fully buried when off.
+    model.hfield_size[2] = Math.max(reliefScale * RELIEF_HMAX, 1e-4);
+    if (reliefGridMat) reliefGridMat.uniforms.uTopoScale.value = reliefScale;
   }
   // Prototype trigger (no UI yet): T toggles the terrain.
   window.addEventListener("keydown", (e) => {
@@ -715,6 +694,7 @@ async function boot({ scene, camera, renderer }) {
   // the R3F layer.
   const grid = makeInfiniteGrid();
   scene.add(grid);
+  reliefGridMat = grid.material; // relief drive mirrors uTopoScale into it
   const { wallMats, wallMeshes } = makeArenaWalls();
   for (const m of wallMeshes) scene.add(m);
 
