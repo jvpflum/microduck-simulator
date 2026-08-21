@@ -3,7 +3,8 @@ title: Microduck Sandbox
 emoji: 🐤
 colorFrom: yellow
 colorTo: gray
-sdk: static
+sdk: docker
+app_port: 8080
 pinned: false
 ---
 
@@ -91,10 +92,18 @@ Old clients simply ignore the new variant flag.
 
 ## How it works
 
-- `rl.js` fetches the MJCF (`robot_allcollisions.xml`, or
+The app is a Vite + React + MUI shell around an imperative game core:
+React/MUI renders the UI chrome (title menu, BIOS console, HUD, touch
+overlay), react-three-fiber owns the canvas/lights/environment, and the
+physics/policy/rig loop lives in framework-agnostic modules under
+`app/src/game/`. A zustand store bridges the two (game state out,
+UI intents in).
+
+- `app/src/game/game.js` fetches the MJCF (`robot_allcollisions.xml`, or
   `robot_allcollisions_rollers.xml` for the roller variant), strips the
-  visual geoms, injects a floor, arena walls, a ball and a STAND keyframe,
-  and compiles it with the official `@mujoco/mujoco` WASM bindings.
+  visual geoms, injects a floor, arena walls, a ball, a collision box for
+  the jukebox prop and a STAND keyframe, and compiles it with the official
+  `@mujoco/mujoco` WASM bindings.
 - Both variants share the exact same policy interface: 61D observation
   (gyro, projected gravity, 14 joint pos/vel, last action, 13D command)
   and 14 position-targets, matching `mjlab_microduck/scripts/infer_policy.py`.
@@ -106,3 +115,16 @@ Old clients simply ignore the new variant flag.
 - Switching variants swaps the compiled model + data + rig + ONNX sessions
   wholesale; both stay resident after the first load so toggling back and
   forth is instant.
+
+## Development
+
+```bash
+cd app
+npm install
+npm run dev     # dev server on http://localhost:5173
+npm run build   # production bundle in app/dist/
+```
+
+The Space builds with the included `Dockerfile` (Vite build, served by
+nginx-unprivileged on port 8080). Static assets (meshes, policies, audio,
+images) live in `app/public/` and keep their historical URLs.
