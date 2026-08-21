@@ -12,8 +12,8 @@
 // Appear/disappear speed. The shared wireframe FX timeline lasts
 // fx.TOTAL_S (0.9 s, tuned for the duck's ceremony); the ball plays the
 // same timeline time-scaled to these snappier durations.
-const BALL_APPEAR_S = 0.2; // spawn pop-in (scan up)
-const BALL_DISAPPEAR_S = 0.15; // despawn/park peel-away (reverse scan)
+const BALL_APPEAR_S = 0.35; // spawn pop-in (scan up)
+const BALL_DISAPPEAR_S = 0.25; // despawn/park peel-away (reverse scan)
 
 export function createBallActor({ THREE, scene, camera, renderer, fxModule, mesh, group }) {
   const fx = fxModule.createWireframeFx();

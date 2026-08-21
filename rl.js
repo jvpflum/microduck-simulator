@@ -51,10 +51,11 @@ const { VARIANTS, VARIANT_NAMES, materialHookFor, DEFAULT_VARIANT, applyVariant,
 // Input stack: a video-game-style Controller aggregating pluggable sources
 // (keyboard + gamepad today, touch later). controller.js documents the
 // source interface contract and the action vocabulary.
-const [{ Controller }, { KeyboardSource }, { GamepadSource }] = await Promise.all([
+const [{ Controller }, { KeyboardSource }, { GamepadSource }, { TouchSource }] = await Promise.all([
   import(signed(`./controls/controller.js?v=${SELF_V}`)),
   import(signed(`./controls/keyboard.js?v=${SELF_V}`)),
   import(signed(`./controls/gamepad.js?v=${SELF_V}`)),
+  import(signed(`./controls/touch.js?v=${SELF_V}`)),
 ]);
 
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
@@ -528,7 +529,9 @@ const cmd = new Float32Array(CMD_SIZE); // [vx, vy, wz, head(4), body(6)]
 // section below, where the raw listeners historically attached.
 const kbSource = new KeyboardSource({ getVelocityLimits: () => velLims() });
 const padSource = new GamepadSource({ getVelocityLimits: () => velLims() });
-const controller = new Controller({ sources: [padSource, kbSource] });
+const touchSource = new TouchSource({ getVelocityLimits: () => velLims() });
+// Keyboard last: it reads zero when idle, so it doubles as the fallback.
+const controller = new Controller({ sources: [padSource, touchSource, kbSource] });
 // Right-stick camera state, read by renderStats before the camera-orbit
 // section below has evaluated.
 let padOrbitLive = false; // HUD: RS keycap lit while deflected
@@ -1199,7 +1202,14 @@ ceremony = createCeremony({
   getRig: () => rig,
   grid, wallMats,
   syncRig, startCameraReset,
-  setLocked: (v) => { inputLocked = v; controller.setLocked(v); },
+  setLocked: (v) => {
+    inputLocked = v;
+    controller.setLocked(v);
+    // A ball is always in play: pop one the moment the entrance or a
+    // respawn ceremony hands control back (resets park the previous
+    // ball, so this re-pops it fresh in front of the duck).
+    if (!v && ball && !ballActive) spawnBall({ fromQueue: true });
+  },
   flashReset: () => { resetFlashAt = performance.now(); },
 });
 // Soccer-ball look computed per pixel on the sphere itself, so there is
@@ -1336,6 +1346,10 @@ const ballMesh = new THREE.Mesh(
   }),
 );
 ballMesh.userData.meshName = "ball";
+// The 48x32 render sphere is far too dense for the wireframe scan (it
+// reads as a solid glowing blob); the FX overlay uses this geodesic
+// stand-in instead - 80 triangles, clean hologram lines.
+ballMesh.userData.fxWireGeometry = new THREE.IcosahedronGeometry(BALL_RADIUS, 1);
 ballMesh.visible = false;
 ballGroup.add(ballMesh);
 scene.add(ballGroup);
@@ -1854,6 +1868,7 @@ function loop() {
   controller.update(dt);
   padJaw = controller.getAxes().jaw;
   document.body.classList.toggle("pad-connected", padSource.connected);
+  document.body.classList.toggle("touch-mode", touchSource.connected);
   // Camera orbit runs every frame while a pad is present (the coasting
   // needs the zero-deflection frames too); without a pad, park the state.
   if (padSource.connected) {

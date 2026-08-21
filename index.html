@@ -405,6 +405,104 @@
         #quickbar .dots button .dot { width: 1.2rem; height: 1.2rem; }
         #quickbar .seg button { height: 2rem; padding: 0 0.8rem; font-size: 0.68rem; }
       }
+      /* Touch overlay: Game Boy thumbs, coarse-pointer devices only
+         (rl.js mirrors the touch source's connected flag onto
+         body.touch-mode). Left thumb = virtual stick, right thumb = A/B
+         caps on the classic diagonal (A up-right, B down-left). */
+      #touch-ui { display: none; }
+      body.touch-mode #touch-ui { display: block; }
+      /* Touch mode strips the HUD down to the thumbs: no quickbar, no mode
+         readout, no telemetry - the stick and caps own the bottom edge.
+         Back stays (top-left) to reach the menu. */
+      body.touch-mode #quickbar,
+      body.touch-mode #mode-wrap,
+      body.touch-mode #ctrl-hz { display: none !important; }
+      /* Floating-stick zone: the whole lower-left quadrant grabs the stick,
+         and the base re-anchors under the finger wherever it lands. Sits
+         BELOW the quickbar/back button in z so their taps still land; the
+         resting stick inside marks the zone when idle. */
+      #touch-zone {
+        position: fixed;
+        left: 0;
+        right: 50%;
+        top: 30%;
+        bottom: 0;
+        z-index: 9;
+        touch-action: none;
+      }
+      #touch-stick {
+        position: absolute;
+        left: 1.3rem;
+        bottom: 2rem;
+        width: 8.2rem;
+        height: 8.2rem;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(8, 8, 12, 0.4);
+        pointer-events: none; /* the zone owns the pointer */
+      }
+      #touch-stick .nub {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 3.6rem;
+        height: 3.6rem;
+        margin: -1.8rem 0 0 -1.8rem;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        background: rgba(255, 255, 255, 0.14);
+        pointer-events: none;
+      }
+      #touch-stick.live { border-color: rgba(255, 122, 47, 0.55); }
+      #touch-stick.live .nub {
+        background: rgba(255, 122, 47, 0.45);
+        border-color: var(--orange);
+      }
+      #touch-btns {
+        position: fixed;
+        right: 1.3rem;
+        bottom: 2.2rem;
+        z-index: 12;
+        width: 9.4rem;
+        height: 8.4rem;
+      }
+      #touch-btns .capwrap {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.3rem;
+      }
+      #touch-btns .cap-a { right: 0; top: 0; }
+      #touch-btns .cap-b { left: 0; bottom: 0; }
+      #touch-btns button {
+        appearance: none;
+        width: 4.2rem;
+        height: 4.2rem;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(8, 8, 12, 0.5);
+        color: rgba(255, 255, 255, 0.85);
+        font: inherit;
+        font-size: 1.3rem;
+        font-weight: 700;
+        cursor: pointer;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #touch-btns button.down {
+        background: var(--orange);
+        border-color: var(--orange);
+        color: var(--ink);
+      }
+      #touch-btns .capwrap span {
+        font-size: 0.55rem;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
       /* Colour swatches */
       #swatches { gap: 0.6rem; }
       #swatches button {
@@ -602,6 +700,7 @@
       body.welcome-open #stats-wrap,
       body.welcome-open #back-btn,
       body.welcome-open #quickbar,
+      body.welcome-open #touch-ui,
       body.welcome-open #ctrl-hz { display: none !important; }
       /* ── Title / pause overlay (full viewport, no card) ────────────── */
       #welcome[hidden] { display: none; }
@@ -633,9 +732,11 @@
         from { transform: translateY(10px) scale(0.94); opacity: 0; }
         to { transform: none; opacity: 1; }
       }
+      /* Wide enough for the two-line title; the controls grid below keeps
+         its own 36rem cap so the tiles don't stretch. */
       #welcome .wstep {
         width: 100%;
-        max-width: 36rem;
+        max-width: min(48rem, 92vw);
         text-align: center;
       }
       #welcome .wstep[hidden] { display: none; }
@@ -719,7 +820,7 @@
          (600, tight tracking, line-height 1), the loudest line on the page. */
       #welcome .title {
         margin: 0 auto;
-        max-width: 20ch;
+        max-width: 24ch;
         font-size: clamp(2.4rem, 5vw, 3.75rem);
         font-weight: 600;
         letter-spacing: -0.03em;
@@ -748,14 +849,26 @@
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 0.55rem;
-        margin-top: 1.4rem;
+        margin: 1.4rem auto 0;
+        max-width: 36rem;
       }
       #welcome .grid-pad { display: none; }
-      body.pad-connected #welcome .grid-kb { display: none; }
-      body.pad-connected #welcome .grid-pad { display: grid; }
+      /* Touch device: the tutorial shows the two thumbs instead of the
+         keycaps. A plugged-in gamepad still wins (pad rules below). */
+      #welcome .grid-touch { display: none; }
+      #welcome .touch-hint { display: none; }
+      body.touch-mode #welcome .grid-kb { display: none; }
+      body.touch-mode #welcome .grid-touch { display: grid; }
+      body.touch-mode #welcome .kb-hint { display: none; }
+      body.touch-mode #welcome .touch-hint { display: block; }
+      #welcome .grid-touch kbd.cap { border-radius: 50%; min-width: 1.9rem; }
       #welcome .kb-hint { display: block; }
       #welcome .pad-hint { display: none; }
-      body.pad-connected #welcome .kb-hint { display: none; }
+      body.pad-connected #welcome .grid-kb,
+      body.pad-connected #welcome .grid-touch { display: none; }
+      body.pad-connected #welcome .grid-pad { display: grid; }
+      body.pad-connected #welcome .kb-hint,
+      body.pad-connected #welcome .touch-hint { display: none; }
       body.pad-connected #welcome .pad-hint { display: block; }
       #welcome .tile {
         padding: 0.85rem 0.45rem 0.75rem;
@@ -860,6 +973,8 @@
         #welcome .title { font-size: 2rem; }
         #welcome .tagline { font-size: 0.95rem; }
         #welcome .grid { grid-template-columns: repeat(2, 1fr); }
+        /* Three touch tiles hold one line even on a phone */
+        #welcome .grid-touch { grid-template-columns: repeat(3, 1fr); }
         #welcome .tile { padding: 0.65rem 0.35rem 0.6rem; }
         #welcome .caps { height: 2.8rem; }
         #welcome .wbtn { font-size: 0.95rem; padding: 0.75rem 1.5rem; }
@@ -887,6 +1002,19 @@
       <div class="seg" id="quick-loco" role="group" aria-label="Locomotion mode">
         <button type="button" data-loco="legs" class="on" aria-pressed="true">Legs</button>
         <button type="button" data-loco="rollers" aria-pressed="false">Rollers</button>
+      </div>
+    </div>
+    <div id="touch-ui">
+      <div id="touch-zone"><div id="touch-stick"><div class="nub"></div></div></div>
+      <div id="touch-btns">
+        <div class="capwrap cap-a">
+          <button type="button" id="touch-a" aria-label="Kick">A</button>
+          <span>Kick</span>
+        </div>
+        <div class="capwrap cap-b">
+          <button type="button" id="touch-b" aria-label="Quack">B</button>
+          <span>Quack</span>
+        </div>
       </div>
     </div>
     <div id="mode-wrap">
@@ -952,11 +1080,11 @@
           <span class="wbrand-name">MicroDuck</span>
         </div>
         <div class="facts">
-          <span>$399</span>
-          <span>Ships before Christmas 2026</span>
+          <span>MuJoCo physics</span>
+          <span>ONNX policies at 50 Hz</span>
         </div>
-        <h1 class="title">A tiny biped you drive in the browser</h1>
-        <p class="tagline">Same body, same policies as the real robot.</p>
+        <h1 class="title">The Microduck simulator, live in your browser</h1>
+        <p class="tagline">The exact same trained policies that drive the real robot.</p>
         <div class="grid grid-kb">
           <div class="tile">
             <div class="caps cluster">
@@ -979,7 +1107,7 @@
           <div class="tile">
             <div class="caps"><kbd>B</kbd></div>
             <div class="t-name">Ball</div>
-            <div class="t-hint">pop one in</div>
+            <div class="t-hint">pop a fresh one</div>
           </div>
           <div class="tile">
             <div class="caps"><kbd>C</kbd></div>
@@ -1011,7 +1139,7 @@
           <div class="tile">
             <div class="caps"><kbd>Y</kbd></div>
             <div class="t-name">Ball</div>
-            <div class="t-hint">pop one in</div>
+            <div class="t-hint">pop a fresh one</div>
           </div>
           <div class="tile">
             <div class="caps"><kbd>RS</kbd></div>
@@ -1024,8 +1152,26 @@
             <div class="t-hint">stand up</div>
           </div>
         </div>
+        <div class="grid grid-touch">
+          <div class="tile">
+            <div class="caps"><kbd>Stick</kbd></div>
+            <div class="t-name">Move</div>
+            <div class="t-hint">left thumb</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd class="cap">A</kbd></div>
+            <div class="t-name">Kick</div>
+            <div class="t-hint">tap it</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd class="cap">B</kbd></div>
+            <div class="t-name">Quack</div>
+            <div class="t-hint">hold for beak</div>
+          </div>
+        </div>
         <p class="orbit-hint kb-hint">drag to orbit &middot; scroll to zoom</p>
         <p class="orbit-hint pad-hint">R3 chase &middot; RT quack</p>
+        <p class="orbit-hint touch-hint">drag to orbit &middot; pinch to zoom</p>
       </div>
 
       <div class="foot">
@@ -1133,6 +1279,14 @@
         window.addEventListener("gamepaddisconnected", pollPad);
         pollPad();
 
+        // Touch tutorial variant needs the class before rl.js boots; the
+        // game loop keeps mirroring the same media query afterwards.
+        const coarse = matchMedia("(pointer: coarse)");
+        const pollTouch = () =>
+          document.body.classList.toggle("touch-mode", coarse.matches);
+        coarse.addEventListener("change", pollTouch);
+        pollTouch();
+
         // ── Menu open / close ────────────────────────────────────────────
         const open = () => {
           modal.hidden = false;
@@ -1214,7 +1368,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "65"; // bump on rl.js changes to defeat heuristic caching
+      const V = "67"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);

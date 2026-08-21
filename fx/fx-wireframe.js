@@ -175,7 +175,10 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
       if (!isTargetMesh(o)) return;
       // Child of the source mesh with identity transform so the overlay
       // follows whatever pose the caller writes (duck joints or ball qpos).
-      const w = new THREE.Mesh(o.geometry, wireMat);
+      // userData.fxWireGeometry substitutes a coarser geometry for the
+      // wireframe pass only (the ball's render sphere is too dense to read
+      // as a hologram); the solidify clip still runs on the real mesh.
+      const w = new THREE.Mesh(o.userData.fxWireGeometry ?? o.geometry, wireMat);
       w.userData.fxOverlay = true;
       w.renderOrder = 5;
       w.visible = false;
