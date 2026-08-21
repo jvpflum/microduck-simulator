@@ -1280,12 +1280,20 @@
         pollPad();
 
         // Touch tutorial variant needs the class before rl.js boots; the
-        // game loop keeps mirroring the same media query afterwards.
+        // game loop keeps mirroring the touch source afterwards. Latching:
+        // (pointer: coarse) OR any real touch proves the device (DevTools
+        // device modes and hybrid laptops often fail the media query), and
+        // the __microduckTouched flag hands the proof to controls/touch.js.
         const coarse = matchMedia("(pointer: coarse)");
-        const pollTouch = () =>
-          document.body.classList.toggle("touch-mode", coarse.matches);
-        coarse.addEventListener("change", pollTouch);
-        pollTouch();
+        const armTouch = () => {
+          window.__microduckTouched = true;
+          document.body.classList.add("touch-mode");
+        };
+        if (coarse.matches) armTouch();
+        else coarse.addEventListener("change", () => coarse.matches && armTouch());
+        window.addEventListener("touchstart", armTouch, { once: true, passive: true });
+        // ?touch=1 forces the thumbs on any device - desktop testing hook.
+        if (new URLSearchParams(location.search).get("touch") === "1") armTouch();
 
         // ── Menu open / close ────────────────────────────────────────────
         const open = () => {
@@ -1368,7 +1376,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "67"; // bump on rl.js changes to defeat heuristic caching
+      const V = "68"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);

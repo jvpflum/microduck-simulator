@@ -15,10 +15,11 @@
 //                holds the beak open (axes.jaw = 1) while held.
 //
 // The overlay DOM lives in index.html (#touch-ui); this module only wires
-// pointer events to it. `connected` mirrors (pointer: coarse) - rl.js
-// reflects it onto body.touch-mode, which is what actually shows the
-// overlay - so a desktop never sees the thumbs and a phone always does,
-// even before the first touch.
+// pointer events to it. `connected` (mirrored onto body.touch-mode by
+// rl.js, which is what actually shows the overlay) arms two ways:
+//   - (pointer: coarse) matches: phones/tablets, before any touch;
+//   - OR the first real touch anywhere: catches DevTools device modes and
+//     hybrid laptops the media query misses. Latching, like a gamepad.
 
 const TOUCH_ALPHA = 0.18; // EMA smoothing toward the stick target
 const TOUCH_DEADZONE = 0.12; // normalized deflection ignored around center
@@ -44,9 +45,16 @@ export class TouchSource {
 
   init() {
     this.#mq = window.matchMedia("(pointer: coarse)");
-    this.#onMq = () => { this.connected = this.#mq.matches; };
+    // Latching: once a device has proven it can touch, keep the thumbs.
+    // __microduckTouched carries a touch seen by the title page before
+    // this module booted.
+    if (window.__microduckTouched) this.connected = true;
+    this.#onMq = () => { this.connected = this.connected || this.#mq.matches; };
     this.#mq.addEventListener("change", this.#onMq);
     this.#onMq();
+    const armTouch = () => { this.connected = true; };
+    window.addEventListener("touchstart", armTouch, { once: true, passive: true });
+    this.#disposers.push(() => window.removeEventListener("touchstart", armTouch));
 
     const zone = document.getElementById("touch-zone");
     const stick = document.getElementById("touch-stick");
