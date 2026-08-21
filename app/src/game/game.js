@@ -30,8 +30,9 @@ import {
   ACTION_SCALE, TIMESTEP, DECIMATION, CTRL_DT,
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE,
-  BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
+  BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y, GRID_SECTION,
   ARCADE_H, ARCADE_W, ARCADE_D, ARCADE_GAP, ARCADE_WALL_GAP,
+  RELIEF_CELLS, RELIEF_LIP, RELIEF_EPS, RELIEF_SPEED,
 } from "./constants.js";
 import {
   buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION,
@@ -177,12 +178,12 @@ async function boot({ scene, camera, renderer }) {
     }
     // Arcade cabinet row: one static box covering all three cabinets so
     // the duck and ball can't clip through them. The row sits against the
-    // back (-X) wall, centered on y = 0 (three.js z = 0), axis-aligned.
+    // front (+X) wall, centered on y = 0 (three.js z = 0), axis-aligned.
     const rowHalfW = (3 * ARCADE_W + 2 * ARCADE_GAP) / 2;
     doc.querySelector("worldbody").appendChild(
       el("geom", {
         name: "arcade_row", type: "box",
-        pos: `${-(ARENA_HALF - ARCADE_WALL_GAP - ARCADE_D / 2)} 0 ${ARCADE_H / 2}`,
+        pos: `${ARENA_HALF - ARCADE_WALL_GAP - ARCADE_D / 2} 0 ${ARCADE_H / 2}`,
         size: `${ARCADE_D / 2} ${rowHalfW} ${ARCADE_H / 2}`,
       }),
     );
@@ -199,21 +200,52 @@ async function boot({ scene, camera, renderer }) {
       mass: "0.03", friction: "0.4 0.01 0.003", solref: "0.03 0.4", condim: "6",
     }));
     doc.querySelector("worldbody").appendChild(ballBody);
+    // Relief terraces: one kinematically driven box per raisable grid
+    // cell, on a vertical slide joint (qpos written directly each control
+    // step, like the ball). q = 0 parks the box fully below the floor;
+    // q = h + RELIEF_EPS puts its top exactly at h. Appended after the
+    // ball so the keyframe layout stays robot + ball + relief.
+    // The boxes overlap the floor plane by design (buried when lowered),
+    // so their contacts with the world are excluded: otherwise the floor
+    // pushes them out and fights the kinematic drive. Light mass + heavy
+    // joint damping keep them effectively rigid under the duck's weight
+    // between two qpos writes.
+    const contact = el("contact", {});
+    for (let i = 0; i < RELIEF_CELLS.length; i++) {
+      const [cx, cy, h] = RELIEF_CELLS[i];
+      const hz = (h + RELIEF_LIP) / 2;
+      const body = el("body", { name: `relief_${i}`, pos: `${cx} ${cy} 0` });
+      body.appendChild(el("joint", {
+        name: `relief_${i}`, type: "slide", axis: "0 0 1", limited: "false",
+        damping: "100",
+      }));
+      body.appendChild(el("geom", {
+        name: `relief_${i}`, type: "box", mass: "1",
+        size: `${GRID_SECTION / 2} ${GRID_SECTION / 2} ${hz}`,
+        pos: `0 0 ${-RELIEF_EPS - hz}`,
+      }));
+      doc.querySelector("worldbody").appendChild(body);
+      contact.appendChild(el("exclude", { body1: "world", body2: `relief_${i}` }));
+    }
+    root.appendChild(contact);
     // STAND keyframe from mjlab's scene_walk.xml. qpos must cover every
     // joint in document order: the 14 actuated hinges take DEFAULT_POSE by
     // name, anything else (the roller variant's passive wheels) starts at
     // zero. The ball's 7 free-joint values MUST be appended or nq won't
-    // match; parked 50 m away = effectively absent.
+    // match; parked 50 m away = effectively absent. Relief slides come
+    // last (they sit after the ball in document order - the selector
+    // below must skip them) and start buried at 0.
     const qposFree = `${SPAWN_X} ${SPAWN_Y} 0.12 1 0 0 0`;
     const poseByName = new Map(JOINT_NAMES.map((n, i) => [n, DEFAULT_POSE[i]]));
     const qposJoints = [...doc.querySelectorAll("body > joint")]
+      .filter((j) => !(j.getAttribute("name") || "").startsWith("relief_"))
       .map((j) => poseByName.get(j.getAttribute("name")) ?? 0)
       .join(" ");
     const pose14 = Array.from(DEFAULT_POSE).join(" ");
     const kf = doc.createElement("keyframe");
     kf.appendChild(el("key", {
       name: "STAND",
-      qpos: `${qposFree} ${qposJoints} ${BALL_PARK_POS} 1 0 0 0`,
+      qpos: `${qposFree} ${qposJoints} ${BALL_PARK_POS} 1 0 0 0${" 0".repeat(RELIEF_CELLS.length)}`,
       ctrl: pose14,
     }));
     root.appendChild(kf);
@@ -521,6 +553,7 @@ async function boot({ scene, camera, renderer }) {
   }
 
   async function controlStep() {
+    driveRelief(CTRL_DT); // kinematic terrain, written before the physics steps
     const feeds = { obs: new ort.Tensor("float32", buildObs(), [1, OBS_SIZE]) };
     const out = await activeSession().run(feeds);
     const act = out.actions.data;
@@ -596,6 +629,66 @@ async function boot({ scene, camera, renderer }) {
       }
     }
   }
+
+  // ── Relief terraces (prototype: toggleable grid topology) ────────────
+  // Kinematic drive: every control step each cell's slide qpos glides
+  // toward its target (raised or buried) at RELIEF_SPEED, qvel carrying
+  // the true rate so contacts push the duck/ball along instead of
+  // tunnelling. The state survives resets and loco switches: the keyframe
+  // re-buries the cells and the drive raises them back if the toggle is
+  // on. Trigger for now: window.rl.setRelief(bool) or the T key
+  // (prototype - no UI commitment yet).
+  let reliefOn = false;
+  const reliefAddrCache = new WeakMap();
+  function reliefAddrs(m) {
+    let a = reliefAddrCache.get(m);
+    if (!a) {
+      a = RELIEF_CELLS.map((_, i) => ({
+        q: m.jnt(`relief_${i}`).qposadr,
+        d: m.jnt(`relief_${i}`).dofadr,
+      }));
+      reliefAddrCache.set(m, a);
+    }
+    return a;
+  }
+  const reliefMeshes = RELIEF_CELLS.map(([cx, cy, h]) => {
+    const boxH = h + RELIEF_LIP;
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(GRID_SECTION, boxH, GRID_SECTION),
+      new THREE.MeshStandardMaterial({ color: 0x0d0f16, roughness: 0.9 }),
+    );
+    // Orange edge lines: reads as a holographic tile popping out of the
+    // grid, cheap and consistent with the arena DA.
+    mesh.add(new THREE.LineSegments(
+      new THREE.EdgesGeometry(mesh.geometry),
+      new THREE.LineBasicMaterial({ color: 0xff7a2f }),
+    ));
+    mesh.position.set(cx, -boxH, -cy); // buried until the drive raises it
+    mesh.visible = false;
+    scene.add(mesh);
+    return mesh;
+  });
+  function driveRelief(dt) {
+    const addrs = reliefAddrs(model);
+    const qpos = data.qpos, qvel = data.qvel;
+    for (let i = 0; i < RELIEF_CELLS.length; i++) {
+      const h = RELIEF_CELLS[i][2];
+      const hz = (h + RELIEF_LIP) / 2;
+      const target = reliefOn ? h + RELIEF_EPS : 0;
+      const prev = qpos[addrs[i].q];
+      const dq = Math.max(-RELIEF_SPEED * dt, Math.min(RELIEF_SPEED * dt, target - prev));
+      const q = prev + dq;
+      qpos[addrs[i].q] = q;
+      qvel[addrs[i].d] = dq / dt;
+      // Mirror the visual box on the physics geom (three y = MJCF z).
+      reliefMeshes[i].position.y = q - RELIEF_EPS - hz;
+      reliefMeshes[i].visible = q > RELIEF_EPS + 1e-4; // top above the floor
+    }
+  }
+  // Prototype trigger (no UI yet): T toggles the terrain.
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "KeyT" && !e.repeat) reliefOn = !reliefOn;
+  });
 
   let running = true;
   (async function controlLoop() {
@@ -744,10 +837,11 @@ async function boot({ scene, camera, renderer }) {
   // assets/props/arcade.glb carries two meshes: the ~9k-tri render mesh
   // and a 500-tri "arcade_wire" stand-in used only by the hologram pass
   // (same fxWireGeometry escape hatch as the ball). Three clones line up
-  // against the back (-X) wall, backs to the wall, screens facing the
-  // arena; each materializes with the duck's ceremony, staggered, and
-  // replays on every respawn. Physics-side, buildPhysicsXml plants one
-  // static box covering the whole row (constants ARCADE_*).
+  // against the front (+X) wall - the one the duck faces at spawn - backs
+  // to the wall, screens toward the player; each materializes with the
+  // duck's ceremony, staggered, and replays on every respawn.
+  // Physics-side, buildPhysicsXml plants one static box covering the
+  // whole row (constants ARCADE_*).
   let arcadeGroups = null;
   try {
     const gltf = await new GLTFLoader().loadAsync(
@@ -770,15 +864,15 @@ async function boot({ scene, camera, renderer }) {
       });
       const group = new THREE.Group();
       group.add(cab);
-      // Row centered on the back wall's middle, one cabinet-width apart,
+      // Row centered on the front wall's middle, one cabinet-width apart,
       // back faces almost touching the wall. The GLB fronts +Z; the row
-      // must front +X (toward the spawn), hence the +90 deg yaw.
+      // must front -X (toward the spawn), hence the -90 deg yaw.
       group.position.set(
-        -(ARENA_HALF - ARCADE_D / 2 - ARCADE_WALL_GAP),
+        ARENA_HALF - ARCADE_D / 2 - ARCADE_WALL_GAP,
         0,
         (i - 1) * (ARCADE_W + ARCADE_GAP),
       );
-      group.rotation.y = Math.PI / 2;
+      group.rotation.y = -Math.PI / 2;
       scene.add(group);
       arcadeGroups.push(group);
       const cabFx = fx.createWireframeFx();
@@ -1262,6 +1356,8 @@ async function boot({ scene, camera, renderer }) {
     get chaseCam() { return chaseCam; },
     set chaseCam(v) { chaseCam = !!v; },
     get arcades() { return arcadeGroups; },
+    get relief() { return reliefOn; },
+    setRelief: (v) => { reliefOn = !!v; },
     get camResetActive() { return camResetT0 !== null; },
     get respawnActive() { return ceremony?.respawnActive ?? false; },
     get camPose() {
