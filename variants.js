@@ -228,13 +228,89 @@ function matFor(spec) {
   return m;
 }
 
+// ── Smooth colourway fades ──────────────────────────────────────────────
+// applyVariant on a rig that is live in a scene tweens every mesh's
+// colour/roughness/metalness toward the new spec (same feel as the
+// showcase site: ~0.35 s, ease in-out) instead of snapping. Off-scene
+// rigs (first paint, the locomotion rig swap before scene.add, freshly
+// cloned ghosts) keep the instant path, so hidden repaints stay exact.
+//
+// Each fading mesh gets a transient material (clone of the target cache
+// entry, rewound to the current look) so the shared matCache instances
+// are never mutated. The per-frame driver writes to that transient
+// material AND to whatever the mesh currently carries: systems that swap
+// materials mid-fade (ghostify's transparent clones, the wireframe FX's
+// clip clones) keep receiving colour updates and still land on the exact
+// target values. When nothing intervened, the mesh settles back on the
+// shared cache material, so the at-rest state is byte-identical to a
+// snap (the wireframe FX caches clip clones per material uuid, which
+// must stay stable across colour changes). Driven by a self-contained
+// rAF ticker that only runs while fades are active - no render-loop hook
+// needed, and rapid re-clicks simply retarget from the current colours.
+const FADE_S = 0.35;
+const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const fades = new Map(); // mesh -> fade record
+let fadeRaf = 0;
+
+function driveFades() {
+  const t = performance.now() / 1000;
+  for (const [mesh, f] of fades) {
+    const x = Math.min(1, (t - f.start) / FADE_S);
+    const e = easeInOut(x);
+    f.mat.color.lerpColors(f.fromColor, f.toColor, e);
+    f.mat.roughness = f.fromRough + (f.toRough - f.fromRough) * e;
+    f.mat.metalness = f.fromMetal + (f.toMetal - f.fromMetal) * e;
+    const cur = mesh.material;
+    if (cur !== f.mat && cur?.color) {
+      cur.color.copy(f.mat.color);
+      cur.roughness = f.mat.roughness;
+      cur.metalness = f.mat.metalness;
+    }
+    if (x >= 1) {
+      fades.delete(mesh);
+      if (cur === f.mat) {
+        mesh.material = matFor(f.spec);
+        f.mat.dispose();
+      }
+    }
+  }
+  fadeRaf = fades.size ? requestAnimationFrame(driveFades) : 0;
+}
+
 export function applyVariant(rig, variant) {
   const v = typeof variant === "string" ? VARIANTS[variant] : variant;
   const map = meshMaterialsFor(v);
+  const fade = !!rig.placer?.parent;
   rig.root.traverse((o) => {
     if (!o.isMesh || !o.userData.meshName) return;
-    o.material = matFor(map[o.userData.meshName] ?? v.mechGray);
+    const spec = map[o.userData.meshName] ?? v.mechGray;
+    const target = matFor(spec);
+    if (!fade) {
+      fades.delete(o);
+      o.material = target;
+      return;
+    }
+    // Already resting on the target material and not mid-fade: no-op.
+    if (o.material === target && !fades.has(o)) return;
+    const from = o.material;
+    const m = target.clone();
+    m.color.copy(from.color);
+    m.roughness = from.roughness;
+    m.metalness = from.metalness;
+    fades.set(o, {
+      mat: m,
+      spec,
+      fromColor: from.color.clone(),
+      toColor: target.color.clone(),
+      fromRough: from.roughness,
+      toRough: target.roughness,
+      fromMetal: from.metalness,
+      toMetal: target.metalness,
+      start: performance.now() / 1000,
+    });
+    o.material = m;
   });
+  if (fades.size && !fadeRaf) fadeRaf = requestAnimationFrame(driveFades);
 }
 
 // Linear-space spec colour -> sRGB CSS hex, for swatch UI elements.

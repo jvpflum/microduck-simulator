@@ -48,6 +48,14 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 In roller mode the legs-only actions (kicks, sit) are disabled and their
 hints fade out; play the ball by driving into it.
 
+### URL parameters
+
+- `?boot=1`: skip the welcome modal and land straight on the BIOS console,
+  which then shows the real loading progress live (honest loader) before
+  the normal entrance plays. Boot failures (missing asset, policy fetch
+  error...) freeze the console on a `SYSTEM HALTED` screen with the error
+  detail - handy for debugging.
+
 The ball is local-only: it lives in your tab's physics and is not shared
 with the multiplayer ghosts. A square arena (3 x 3 m) fences the play
 area so neither the ball nor the duck can wander off.

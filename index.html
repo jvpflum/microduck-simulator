@@ -3,11 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Microduck RL playground</title>
+    <title>Microduck</title>
     <style>
       :root {
         --ink: #08080c;
-        --yellow: #ffd23f;
+        --orange: #ff7a2f;
+        --yellow: var(--orange);
       }
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body { height: 100%; }
@@ -17,31 +18,139 @@
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         overflow: hidden;
       }
-      #scene { position: fixed; inset: 0; }
+      #scene { position: fixed; inset: 0; z-index: 1; }
       #scene canvas { display: block; }
+      /* Pre-boot veil: covers everything until the title page's logo and
+         fonts are in, so the menu never pops in half-assembled. Light grey
+         spinner, centered on the ink. */
+      #preboot {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ink);
+        opacity: 1;
+        transition: opacity 0.25s ease;
+      }
+      #preboot.off { opacity: 0; pointer-events: none; }
+      #preboot .spin {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.14);
+        border-top-color: rgba(255, 255, 255, 0.55);
+        animation: preboot-spin 0.8s linear infinite;
+      }
+      @keyframes preboot-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #preboot .spin { animation-duration: 1.6s; }
+      }
       .halftone {
         position: fixed;
         inset: 0;
+        z-index: 2;
         pointer-events: none;
         background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.5px);
         background-size: 21px 21px;
         mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
         -webkit-mask-image: linear-gradient(to bottom, transparent 30%, black 100%);
       }
-      /* Top-left corner: what this is */
-      #brand {
+      /* ── CRT / old-TV overlay ──────────────────────────────────────
+         Independent full-viewport layers stacked over the 3D scene at
+         z-index 5: above the canvas and the halftone dots, below the
+         HUD (z 10), the BIOS boot screen (z 20) and the welcome modal
+         (z 30) - so the interface stays crisp and only the scene gets
+         the old-TV treatment.
+
+         Each effect lives in its own child div + CSS block and can be
+         removed by deleting that block and its <div id="crt"> child:
+           .crt-scanlines  fine horizontal lines + faint RGB fringe
+           .crt-noise      boiling static grain (tiled SVG turbulence)
+           .crt-vignette   darkened edges, curved-glass feel (optional)
+
+         Tuning knobs (custom properties on #crt):
+           --crt-scanline-opacity   line strength        (0 = off)
+           --crt-scanline-pitch     line spacing in px
+           --crt-noise-opacity      grain strength       (0 = off)
+           --crt-vignette-opacity   edge darkening       (0 = off)
+
+         Performance: the only animation is a transform-only jitter on
+         the noise layer, so everything stays on the compositor and
+         never triggers repaints of the WebGL canvas underneath. */
+      #crt {
         position: fixed;
-        top: 1.4rem;
-        left: 1.6rem;
-        z-index: 10;
-        font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.55);
-        line-height: 1.8;
+        inset: 0;
+        z-index: 5;
+        pointer-events: none;
+        overflow: hidden;
+        --crt-scanline-opacity: 0.13;
+        --crt-scanline-pitch: 3px;
+        --crt-noise-opacity: 0.045;
+        --crt-vignette-opacity: 0.42;
       }
-      #brand b { color: var(--yellow); font-weight: 600; }
+      /* SCANLINES: one thin dark line every --crt-scanline-pitch, plus a
+         very faint vertical RGB fringe (aperture-grille tint). Static,
+         zero runtime cost. */
+      #crt .crt-scanlines {
+        position: absolute;
+        inset: 0;
+        background:
+          repeating-linear-gradient(
+            to bottom,
+            rgba(0, 0, 0, 0.55) 0,
+            rgba(0, 0, 0, 0.55) 1px,
+            transparent 1px,
+            transparent var(--crt-scanline-pitch)
+          ),
+          repeating-linear-gradient(
+            to right,
+            rgba(255, 70, 60, 0.05) 0,
+            rgba(255, 70, 60, 0.05) 1px,
+            rgba(70, 255, 90, 0.035) 1px,
+            rgba(70, 255, 90, 0.035) 2px,
+            rgba(70, 110, 255, 0.05) 2px,
+            rgba(70, 110, 255, 0.05) 3px
+          );
+        opacity: var(--crt-scanline-opacity);
+      }
+      /* NOISE: a small tiled SVG turbulence texture (white specks with
+         noisy alpha), jittered between four offsets with steps() so the
+         grain "boils" like broadcast static. The layer is oversized so
+         the jumps never reveal an edge; only transform animates. */
+      #crt .crt-noise {
+        position: absolute;
+        inset: -80px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.7 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+        background-size: 160px 160px;
+        opacity: var(--crt-noise-opacity);
+        animation: crt-noise 0.5s steps(1) infinite;
+        will-change: transform;
+      }
+      @keyframes crt-noise {
+        0% { transform: translate(0, 0); }
+        25% { transform: translate(-45px, 30px); }
+        50% { transform: translate(25px, -55px); }
+        75% { transform: translate(-30px, -15px); }
+        100% { transform: translate(0, 0); }
+      }
+      /* VIGNETTE (optional): gently darkened corners, like the curved
+         glass of a CRT tube. Static. */
+      #crt .crt-vignette {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(
+          115% 90% at 50% 50%,
+          transparent 62%,
+          rgba(0, 0, 0, var(--crt-vignette-opacity)) 100%
+        );
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #crt .crt-noise { animation: none; }
+      }
       /* BIOS/POST boot readout: hidden while the welcome modal is up (the
          real load runs silently behind it); rl.js reveals it after the
          first "Waddle in" and replays / tracks the milestones over an
@@ -50,9 +159,10 @@
         position: fixed;
         inset: 0;
         display: none;
-        align-items: center;
-        justify-content: center;
-        padding: 0 2rem;
+        /* POST readout sits bottom-left like a real BIOS, not centered */
+        align-items: flex-end;
+        justify-content: flex-start;
+        padding: 2.2rem 2.4rem;
         background: var(--ink);
         z-index: 20;
         pointer-events: none;
@@ -62,25 +172,42 @@
       #loading.off { opacity: 0; }
       #loading .post {
         min-width: min(380px, 84vw);
+        /* Grow upward from the bottom-left anchor; when the log outgrows
+           the viewport, clip the OLDEST lines at the top (content is
+           bottom-aligned) so the newest line + cursor stay visible. */
+        max-height: calc(100vh - 4.4rem);
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        overflow: hidden;
+        /* Raw 90s POST look: small, tight, unsmoothed monospace - no glow,
+           no tracking, plain weight. Reads like a firmware screen, not a
+           styled terminal. */
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 0.72rem;
-        line-height: 2.1;
-        letter-spacing: 0.06em;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.55;
+        letter-spacing: 0;
         text-transform: uppercase;
         text-align: left;
-        color: rgba(255, 210, 63, 0.72);
-        text-shadow: 0 0 10px rgba(255, 210, 63, 0.2);
+        /* Robot orange (classic duck's BRIGHT_ORANGE, #ff7a2f in sRGB) */
+        color: rgba(255, 122, 47, 0.92);
         white-space: pre-wrap;
         overflow-wrap: break-word;
       }
       #loading .post > div:first-child {
-        color: rgba(255, 255, 255, 0.8);
-        margin-bottom: 0.3rem;
+        color: rgba(255, 255, 255, 0.85);
+        margin-bottom: 0.55em;
       }
       /* Blinking block cursor at the end of the newest line */
       #loading .post > div:last-child::after {
         content: "\2588";
-        margin-left: 0.4em;
+        margin-left: 0.15em;
+        animation: post-blink 1s steps(1) infinite;
+      }
+      /* Fatal boot failure: SYSTEM HALTED blinks like an old POST fault */
+      #loading .post > div.halt {
+        color: rgba(255, 82, 47, 0.95);
         animation: post-blink 1s steps(1) infinite;
       }
       @keyframes post-blink {
@@ -133,31 +260,151 @@
         border-color: #ffc61e;
         color: #08080c;
       }
-      /* Current-state label: quiet line above the telemetry, slot-machine
-         roll on change */
-      .mode {
-        position: relative;
-        overflow: hidden;
-        height: 1.2em;
-        min-width: 8ch;
-        font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-        color: rgba(255, 210, 63, 0.8);
+      /* Active policy/mode readout, top-right: bright orange caption over a
+         big white monospace name. rl.js scrambles the letters on change
+         (Matrix-style), so the span is plain flow - no slot-machine
+         transforms. Monospace keeps the width stable mid-scramble. */
+      #mode-wrap {
+        position: fixed;
+        top: 1.4rem;
+        right: 1.6rem;
+        z-index: 10;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        pointer-events: none;
         text-align: right;
-        text-shadow: 0 0 8px rgba(255, 210, 63, 0.3);
       }
-      .mode .mode-text {
-        position: absolute;
-        left: 0;
-        top: 0;
-        width: 100%;
+      #mode-wrap .caption {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: var(--orange);
+        text-shadow: 0 0 10px rgba(255, 122, 47, 0.35);
+      }
+      .mode {
+        min-width: 8ch;
+        min-height: 1.2em;
+        font-size: 1.7rem;
+        font-weight: 600;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.95);
+        text-align: right;
+        text-shadow: 0 0 12px rgba(255, 255, 255, 0.28);
         line-height: 1.2;
-        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
       }
-      .mode .mode-text.in { transform: translateY(130%); opacity: 0; }
-      .mode .mode-text.out { transform: translateY(-130%); opacity: 0; }
+      /* In-game back-to-menu button, top-left */
+      #back-btn {
+        position: fixed;
+        top: 1.4rem;
+        left: 1.6rem;
+        z-index: 10;
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45em;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(8, 8, 12, 0.55);
+        color: rgba(255, 255, 255, 0.75);
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 0.6rem 1.15rem;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+      }
+      #back-btn:hover {
+        color: #fff;
+        border-color: rgba(255, 255, 255, 0.4);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      #back-btn:focus-visible {
+        outline: 2px solid var(--orange);
+        outline-offset: 2px;
+      }
+      /* In-game quick picks, bottom-left: colour dots + legs/rollers, live.
+         Same pill language as the vitrine DuckPlayground. */
+      #quickbar {
+        position: fixed;
+        bottom: 1.4rem;
+        left: 1.6rem;
+        z-index: 10;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.6rem;
+      }
+      #quickbar .dots,
+      #quickbar .seg {
+        display: inline-flex;
+        gap: 0.24rem;
+        padding: 0.26rem;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(8, 8, 12, 0.55);
+      }
+      #quickbar .dots button {
+        appearance: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        height: 2.3rem;
+        padding: 0 0.5rem;
+        border: none;
+        border-radius: 999px;
+        background: transparent;
+        cursor: pointer;
+      }
+      #quickbar .dots button .dot {
+        width: 1.4rem;
+        height: 1.4rem;
+        border-radius: 50%;
+        opacity: 0.45;
+        transition: transform 0.2s ease, opacity 0.2s ease;
+      }
+      #quickbar .dots button:hover .dot { opacity: 1; }
+      #quickbar .dots button.on .dot {
+        opacity: 1;
+        transform: scale(1.15);
+      }
+      #quickbar .seg button {
+        appearance: none;
+        border: none;
+        background: transparent;
+        height: 2.3rem;
+        padding: 0 1.05rem;
+        border-radius: 999px;
+        font: inherit;
+        font-size: 0.76rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+        cursor: pointer;
+        transition: color 0.2s ease, background 0.2s ease;
+      }
+      #quickbar .seg button.on {
+        background: rgba(255, 122, 47, 0.14);
+        color: var(--orange);
+      }
+      #quickbar .dots button:focus-visible,
+      #quickbar .seg button:focus-visible {
+        outline: 2px solid var(--orange);
+        outline-offset: 2px;
+      }
+      /* Narrow screens: pull the quickbar back a notch so it stays on one
+         line and clear of the bottom-right telemetry. */
+      @media (max-width: 480px) {
+        #quickbar .dots button { height: 2rem; padding: 0 0.42rem; }
+        #quickbar .dots button .dot { width: 1.2rem; height: 1.2rem; }
+        #quickbar .seg button { height: 2rem; padding: 0 0.8rem; font-size: 0.68rem; }
+      }
       /* Colour swatches */
       #swatches { gap: 0.6rem; }
       #swatches button {
@@ -257,7 +504,7 @@
          a phosphor-glow monospace. No scanlines - the type does the work. */
       #stats-wrap {
         position: fixed;
-        top: 1.4rem;
+        top: 6.1rem; /* below the mode readout */
         right: 1.6rem;
         z-index: 10;
         display: flex;
@@ -289,166 +536,216 @@
         0%, 58% { opacity: 1; }
         59%, 100% { opacity: 0.12; }
       }
-      #stats {
+      /* Telemetry stack, bottom-right: peers / speed + odometer / loop
+         rates, one line each, quietest at the bottom. */
+      #ctrl-hz {
+        position: fixed;
+        bottom: 1.4rem;
+        right: 1.6rem;
+        z-index: 10;
+        pointer-events: none;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 0.62rem;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        text-align: right;
-        color: rgba(255, 255, 255, 0.45);
-        line-height: 1.7;
+        color: rgba(255, 255, 255, 0.35);
         font-variant-numeric: tabular-nums;
-        text-shadow: 0 0 6px rgba(255, 255, 255, 0.18);
+        text-shadow: 0 0 6px rgba(255, 255, 255, 0.15);
+        white-space: pre-line;
+        text-align: right;
+        line-height: 1.8;
+      }
+      /* Radar minimap: top-down arena view in the top-right OSD stack */
+      #minimap {
+        width: 132px;
+        height: 132px;
+        margin-top: 0.45rem;
+        pointer-events: none;
+        background: rgba(0, 0, 0, 0.38);
+        border: 1px solid rgba(255, 122, 47, 0.4);
+        border-radius: 2px;
       }
       /* BIOS-style line while the roller variant streams in on first switch */
       #osd-load[hidden] { display: none; }
       #osd-load {
         font-size: 0.68rem;
         letter-spacing: 0.14em;
-        color: var(--yellow, #ffd23f);
-        text-shadow: 0 0 8px rgba(255, 210, 63, 0.4);
+        color: var(--orange);
+        text-shadow: 0 0 8px rgba(255, 122, 47, 0.4);
       }
       .osd-load-cursor {
         display: inline-block;
         margin-left: 0.15em;
         animation: rec-blink 0.8s steps(1) infinite;
       }
+      /* Temporarily hidden HUD pieces (CSS-only so the DOM, ids and JS
+         wiring stay intact and each can be re-enabled by deleting a line):
+         - #osd-time: the VHS play/time counter (REC + ONLINE stay);
+         - #hud .keys: the keycap hints + mini joysticks block;
+         - #hud .stack: the in-game colour swatch pill (the welcome modal
+           still clicks the hidden #swatches buttons programmatically). */
+      #osd-time { display: none; }
+      #hud .keys { display: none; }
+      #hud .stack { display: none; }
+      .osd-rec { display: none; }
+      #minimap { display: none; }
       /* Roller mode: legs-only actions (kicks, sit) are inert - fade their
          hints; rl.js toggles body.rollers on every variant switch. */
       body.rollers .legs-only { opacity: 0.25; }
       @media (max-width: 700px) {
         #hud { flex-direction: column; align-items: flex-start; }
         #hud .keys { display: none; }
-        #brand .sub { display: none; }
-        /* Drop the OSD below the (single-line) brand so they never collide */
-        #stats-wrap { top: 3.4rem; }
       }
-      /* ── Welcome modal ─────────────────────────────────────────────── */
-      /* display:flex would override the hidden attribute's UA display:none,
-         so hidden must win explicitly. */
+      /* HUD stays off while the title flow / pause overlay is up. */
+      body.welcome-open #hud,
+      body.welcome-open #mode-wrap,
+      body.welcome-open #stats-wrap,
+      body.welcome-open #back-btn,
+      body.welcome-open #quickbar,
+      body.welcome-open #ctrl-hz { display: none !important; }
+      /* ── Title / pause overlay (full viewport, no card) ────────────── */
       #welcome[hidden] { display: none; }
       #welcome {
         position: fixed;
         inset: 0;
         z-index: 30;
         display: flex;
-        padding: 1.25rem;
-        overflow-y: auto;
-        background: rgba(8, 8, 12, 0.5);
-        backdrop-filter: blur(18px) saturate(1.3);
-        -webkit-backdrop-filter: blur(18px) saturate(1.3);
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2.4rem 1.4rem 1.8rem;
+        background: var(--ink);
         opacity: 1;
-        transition: opacity 0.35s ease;
+        overflow-y: auto;
+        transition: opacity 0.35s ease, background 0.4s ease;
       }
       #welcome.closing { opacity: 0; pointer-events: none; }
-      #welcome .card {
-        position: relative;
-        /* Auto margins center the card and degrade to scroll on overflow */
-        margin: auto;
-        width: 100%;
-        max-width: 480px;
-        padding: 2.3rem 2.4rem 1.8rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 24px;
-        background:
-          radial-gradient(130% 80% at 50% 0%, rgba(255, 210, 63, 0.06), transparent 55%),
-          rgba(13, 13, 19, 0.94);
-        box-shadow:
-          inset 0 1px 0 rgba(255, 255, 255, 0.06),
-          0 24px 60px rgba(0, 0, 0, 0.55),
-          0 80px 160px rgba(0, 0, 0, 0.4);
-        text-align: center;
-        animation: card-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
-      }
-      @keyframes card-in {
-        from { transform: translateY(14px) scale(0.965); opacity: 0; }
-        to { transform: none; opacity: 1; }
-      }
-      /* Rows fade in with a gentle stagger; no bounce anywhere. */
-      #welcome .card > * {
-        animation: row-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
-      }
-      #welcome .card > :nth-child(1) { animation-delay: 0.05s; }
-      #welcome .card > :nth-child(2) { animation-delay: 0.11s; }
-      #welcome .card > :nth-child(3) { animation-delay: 0.17s; }
-      #welcome .card > :nth-child(4) { animation-delay: 0.23s; }
-      #welcome .card > :nth-child(5) { animation-delay: 0.27s; }
       @keyframes row-in {
         from { transform: translateY(8px); opacity: 0; }
         to { transform: none; opacity: 1; }
       }
+      #welcome .wstep {
+        width: 100%;
+        max-width: 36rem;
+        text-align: center;
+      }
+      #welcome .wstep[hidden] { display: none; }
+      #welcome .wstep > * {
+        animation: row-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      #welcome .wstep > :nth-child(2) { animation-delay: 0.06s; }
+      #welcome .wstep > :nth-child(3) { animation-delay: 0.12s; }
       @media (prefers-reduced-motion: reduce) {
-        #welcome .card, #welcome .card > * { animation: none; }
+        #welcome .wstep > * { animation: none; }
       }
-      /* Header: duck-head mark (closed by default, open on hover - same
-         swap as the site) over a clean typographic identity. */
-      #welcome .logo-head {
-        position: relative;
-        width: 5.8rem;
-        margin: 0 auto;
-        filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.45));
-      }
-      #welcome .logo-head img { display: block; width: 100%; }
-      #welcome .logo-head .open { position: absolute; inset: 0; opacity: 0; }
-      #welcome .logo-head:hover .open { opacity: 1; }
-      #welcome .logo-head:hover .closed { opacity: 0; }
-      #welcome .title {
-        margin-top: 0.8rem;
-        font-size: 1.4rem;
-        font-weight: 700;
-        letter-spacing: -0.01em;
-        color: rgba(255, 255, 255, 0.95);
-      }
-      #welcome .subtitle {
-        margin-top: 0.35rem;
-        font-size: 0.6rem;
-        font-weight: 700;
-        letter-spacing: 0.34em;
-        text-indent: 0.34em; /* recenter: tracking pads the right edge only */
+      #welcome .facts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        margin-bottom: 1.15rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: rgba(255, 210, 63, 0.8);
+        color: rgba(255, 255, 255, 0.78);
       }
-      #welcome .tagline {
-        margin: 0.8rem auto 0;
-        max-width: 42ch;
-        font-size: 0.78rem;
-        line-height: 1.6;
-        color: rgba(255, 255, 255, 0.58);
+      #welcome .facts span:not(:last-child)::after {
+        content: "·";
+        color: var(--orange);
+        padding-left: 0.6em;
+      }
+      /* Vitrine brand lockup, centered above the title: drawn duck head +
+         name. Hovering swaps to the open-beak frame, same hard sprite swap
+         as the vitrine header. */
+      #welcome .wbrand {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.55rem;
+        margin-bottom: 1.3rem;
+        user-select: none;
+      }
+      #welcome .wbrand-head {
+        position: relative;
+        display: block;
+        height: 3rem;
+      }
+      #welcome .wbrand-head .duck-closed {
+        display: block;
+        height: 100%;
+        width: auto;
+      }
+      /* The open frame's canvas (460x333) is a hair wider/taller than the
+         closed one (454x269): the dropped jaw sticks out past the head.
+         Offsets pin the head in place while the jaw hangs below. */
+      #welcome .wbrand-head .duck-open {
+        position: absolute;
+        top: -0.75%;
+        left: -1.1%;
+        width: 101.3%;
+        max-width: none;
+        height: auto;
+        opacity: 0;
+      }
+      #welcome .wbrand:hover .duck-closed { opacity: 0; }
+      #welcome .wbrand:hover .duck-open { opacity: 1; }
+      #welcome .wbrand-name {
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        font-size: 1.6rem;
+        color: #fff;
+      }
+      /* Landing-grade h1: same type conventions as the vitrine hero
+         (600, tight tracking, line-height 1), the loudest line on the page. */
+      #welcome .title {
+        margin: 0 auto;
+        max-width: 20ch;
+        font-size: clamp(2.4rem, 5vw, 3.75rem);
+        font-weight: 600;
+        letter-spacing: -0.03em;
+        color: #fff;
+        line-height: 1.02;
         text-wrap: balance;
       }
-      /* Section label with hairlines on both sides */
-      #welcome .section-label {
-        display: flex;
-        align-items: center;
-        gap: 0.9rem;
-        margin: 1.5rem 0 0.8rem;
-        font-size: 0.56rem;
-        font-weight: 700;
-        letter-spacing: 0.28em;
-        text-indent: 0.28em;
+      #welcome .label {
+        font-size: 0.68rem;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        text-indent: 0.18em;
         text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.35);
+        color: var(--orange);
       }
-      #welcome .section-label::before,
-      #welcome .section-label::after {
-        content: "";
-        flex: 1;
-        height: 1px;
-        background: rgba(255, 255, 255, 0.08);
+      #welcome .tagline {
+        margin: 1.25rem auto 0;
+        max-width: 36ch;
+        font-size: clamp(1.05rem, 1.5vw, 1.3rem);
+        line-height: 1.5;
+        letter-spacing: -0.012em;
+        color: rgba(255, 255, 255, 0.72);
+        text-wrap: balance;
       }
-      /* Controls: six keycap tiles on a tidy grid */
       #welcome .grid {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 0.5rem;
+        gap: 0.55rem;
+        margin-top: 1.4rem;
       }
+      #welcome .grid-pad { display: none; }
+      body.pad-connected #welcome .grid-kb { display: none; }
+      body.pad-connected #welcome .grid-pad { display: grid; }
+      #welcome .kb-hint { display: block; }
+      #welcome .pad-hint { display: none; }
+      body.pad-connected #welcome .kb-hint { display: none; }
+      body.pad-connected #welcome .pad-hint { display: block; }
       #welcome .tile {
-        padding: 0.75rem 0.4rem 0.7rem;
-        border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.03);
+        padding: 0.85rem 0.45rem 0.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.035);
       }
-      /* Fixed-height keycap area so every tile's label sits on the same
-         baseline whether it holds one cap or the arrow cluster. */
       #welcome .caps {
         display: flex;
         flex-direction: column;
@@ -459,153 +756,135 @@
       }
       #welcome .caps .krow {
         display: flex;
-        gap: 0.2rem;
+        gap: 0.22rem;
         justify-content: center;
       }
       #welcome kbd {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 1.55rem;
-        height: 1.55rem;
+        min-width: 1.65rem;
+        height: 1.65rem;
         padding: 0 0.45rem;
         font: inherit;
         font-size: 0.68rem;
         font-weight: 600;
-        color: rgba(255, 255, 255, 0.88);
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 6px;
-        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        color: #fff;
+        background: #14141c;
+        border: 2px solid var(--ink);
+        border-radius: 8px;
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82);
       }
-      /* The arrow cluster packs six caps in two rows, so its caps shrink a
-         notch; every other tile keeps the full-size cap. */
       #welcome .caps.cluster kbd { min-width: 1.4rem; height: 1.4rem; padding: 0 0.3rem; font-size: 0.62rem; }
       #welcome .t-name {
         margin-top: 0.55rem;
-        font-size: 0.62rem;
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        text-indent: 0.18em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.85);
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        text-transform: none;
+        text-indent: 0;
+        color: #fff;
       }
       #welcome .t-hint {
-        margin-top: 0.2rem;
-        font-size: 0.6rem;
-        color: rgba(255, 255, 255, 0.38);
+        margin-top: 0.18rem;
+        font-size: 0.62rem;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--orange);
       }
       #welcome .orbit-hint {
-        margin-top: 0.7rem;
-        font-size: 0.62rem;
-        letter-spacing: 0.08em;
-        color: rgba(255, 255, 255, 0.35);
-      }
-      /* Secondary row: gamepad + live ghosts */
-      #welcome .extras {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1.2rem;
-        margin-top: 1.3rem;
-        padding-top: 1.1rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.07);
-      }
-      #welcome .x-label {
-        display: block;
-        margin-bottom: 0.3rem;
-        font-size: 0.56rem;
-        font-weight: 700;
-        letter-spacing: 0.24em;
-        text-indent: 0.24em;
-        text-transform: uppercase;
-        color: rgba(255, 210, 63, 0.7);
-      }
-      #welcome .x-item {
+        margin-top: 1rem;
         font-size: 0.68rem;
-        line-height: 1.5;
-        color: rgba(255, 255, 255, 0.5);
-        text-wrap: balance;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        color: rgba(255, 255, 255, 0.4);
       }
-      #welcome .cta {
-        margin-top: 1.5rem;
+      #welcome .foot {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        margin-top: 1.6rem;
+        width: 100%;
       }
-      #welcome-go {
+      #welcome .wbtn {
         appearance: none;
-        border: none;
-        background: var(--yellow);
+        border: 3px solid var(--ink);
+        background: var(--orange);
         color: var(--ink);
         font: inherit;
-        font-size: 0.75rem;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        text-indent: 0.14em;
-        text-transform: uppercase;
-        padding: 0.8rem 2.6rem;
+        font-size: 1.02rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        text-transform: none;
+        text-indent: 0;
+        padding: 0.85rem 1.9rem;
         border-radius: 999px;
+        box-shadow: 0 0 0 3px #fff;
         cursor: pointer;
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
       }
-      #welcome-go:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 8px 28px rgba(255, 210, 63, 0.3);
+      #welcome .wbtn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0 0 3px #fff, 0 10px 26px rgba(255, 122, 47, 0.3);
       }
-      #welcome-go:focus-visible {
-        outline: 2px solid rgba(255, 255, 255, 0.85);
-        outline-offset: 3px;
+      #welcome .wbtn:active {
+        transform: translateY(1px);
+        box-shadow: 0 0 0 3px #fff;
       }
-      #welcome .fineprint {
-        margin-top: 0.9rem;
-        font-size: 0.58rem;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: rgba(255, 255, 255, 0.28);
+      #welcome .wbtn:focus-visible {
+        outline: 2px solid #fff;
+        outline-offset: 4px;
       }
-      /* Narrow screens: stack the grid two-up, tighten the whole rhythm so
-         the card still fits a small phone viewport without scrolling */
       @media (max-width: 480px) {
-        #welcome .card { padding: 1.6rem 1.3rem 1.4rem; border-radius: 20px; }
-        #welcome .logo-head { width: 4.3rem; }
-        #welcome .title { margin-top: 0.6rem; font-size: 1.2rem; }
-        #welcome .tagline { margin-top: 0.55rem; font-size: 0.73rem; }
-        #welcome .section-label { margin: 1.1rem 0 0.7rem; }
-        #welcome .grid { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
-        #welcome .tile { padding: 0.6rem 0.4rem 0.55rem; }
-        #welcome .caps { height: 2.7rem; }
-        #welcome .t-name { margin-top: 0.4rem; }
-        #welcome .orbit-hint { margin-top: 0.55rem; }
-        #welcome .extras { grid-template-columns: 1fr; gap: 0.5rem; margin-top: 1rem; padding-top: 0.9rem; }
-        #welcome .x-label { display: inline; margin-right: 0.45rem; }
-        #welcome .cta { margin-top: 1.1rem; }
+        #welcome .wbrand-head { height: 2.4rem; }
+        #welcome .wbrand-name { font-size: 1.3rem; }
+        #welcome .title { font-size: 2rem; }
+        #welcome .tagline { font-size: 0.95rem; }
+        #welcome .grid { grid-template-columns: repeat(2, 1fr); }
+        #welcome .tile { padding: 0.65rem 0.35rem 0.6rem; }
+        #welcome .caps { height: 2.8rem; }
+        #welcome .wbtn { font-size: 0.95rem; padding: 0.75rem 1.5rem; }
       }
-      /* Short laptop viewports: shave vertical rhythm so it never scrolls */
-      @media (max-height: 760px) {
-        #welcome .logo-head { width: 4.8rem; }
-        #welcome .card { padding-top: 1.7rem; }
-        #welcome .title { margin-top: 0.6rem; font-size: 1.25rem; }
-        #welcome .tagline { margin-top: 0.6rem; }
-        #welcome .section-label { margin: 1.1rem 0 0.7rem; }
-        #welcome .extras { margin-top: 1rem; padding-top: 0.9rem; }
-        #welcome .cta { margin-top: 1.1rem; }
+      @media (max-height: 700px) {
+        #welcome .tagline { margin-top: 0.85rem; }
+        #welcome .foot { margin-top: 1.1rem; }
       }
-      #brand { cursor: pointer; }
     </style>
   </head>
   <body>
+    <div id="preboot" aria-hidden="true"><div class="spin"></div></div>
     <div id="scene"></div>
     <div class="halftone"></div>
-    <div id="brand">
-      <b>Microduck</b> &middot; real trained policies<br />
-      <span class="sub">MuJoCo + ONNX, live in your browser</span>
+    <!-- CRT overlay: each child is one effect; delete a div together with
+         its CSS block in <style> to drop that effect. -->
+    <div id="crt" aria-hidden="true">
+      <div class="crt-scanlines"></div>
+      <div class="crt-noise"></div>
+      <div class="crt-vignette"></div>
+    </div>
+    <button type="button" id="back-btn">&larr; Back</button>
+    <div id="quickbar">
+      <div class="dots" id="quick-colors" role="group" aria-label="Duck colours"></div>
+      <div class="seg" id="quick-loco" role="group" aria-label="Locomotion mode">
+        <button type="button" data-loco="legs" class="on" aria-pressed="true">Legs</button>
+        <button type="button" data-loco="rollers" aria-pressed="false">Rollers</button>
+      </div>
+    </div>
+    <div id="mode-wrap">
+      <span class="caption">Mode</span>
+      <div class="mode" id="mode-label"><span class="mode-text">Run</span></div>
     </div>
     <div id="stats-wrap">
       <div class="osd-top">
         <span class="osd-rec"><span class="rec-dot">&#9679;</span>&nbsp;REC</span>
         <span id="osd-time">&#9654; 00:00:00</span>
       </div>
-      <div class="mode" id="mode-label"><span class="mode-text">Run</span></div>
-      <div id="stats"></div>
+      <canvas id="minimap" width="264" height="264" aria-hidden="true"></canvas>
       <div id="osd-load" hidden>LOADING ROLLERS<span class="osd-load-cursor">&#9608;</span></div>
     </div>
+    <div id="ctrl-hz"></div>
     <div id="hud" hidden>
       <div class="stack">
         <span class="caption">Colour</span>
@@ -646,109 +925,263 @@
     </div>
     <div id="loading"><div class="post"></div></div>
 
-    <div id="welcome" hidden>
-      <div class="card" role="dialog" aria-modal="true" aria-label="Microduck playground">
-        <header>
-          <div class="logo-head">
-            <img class="closed" id="logo-head-closed" alt="Microduck" />
-            <img class="open" id="logo-head-open" alt="" aria-hidden="true" />
-          </div>
-          <h1 class="title">Microduck</h1>
-          <div class="subtitle">RL playground</div>
-          <p class="tagline">
-            Real physics, real trained neural policies, running live in
-            your browser fifty times a second.
-          </p>
-        </header>
-        <section aria-label="Controls">
-          <div class="section-label">Controls</div>
-          <div class="grid">
-            <div class="tile">
-              <div class="caps cluster">
-                <span class="krow"><kbd>&uarr;</kbd></span>
-                <span class="krow"><kbd>&larr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd></span>
-              </div>
-              <div class="t-name">Move</div>
-              <div class="t-hint">arrows or ZQSD</div>
-            </div>
-            <div class="tile">
-              <div class="caps"><span class="krow"><kbd>A</kbd><kbd>E</kbd></span></div>
-              <div class="t-name">Kick</div>
-              <div class="t-hint">left / right</div>
-            </div>
-            <div class="tile">
-              <div class="caps"><kbd>R</kbd></div>
-              <div class="t-name">Roll</div>
-              <div class="t-hint">barrel roll</div>
-            </div>
-            <div class="tile">
-              <div class="caps"><kbd>B</kbd></div>
-              <div class="t-name">Ball</div>
-              <div class="t-hint">pop one in</div>
-            </div>
-            <div class="tile">
-              <div class="caps"><kbd>C</kbd></div>
-              <div class="t-name">Camera</div>
-              <div class="t-hint">toggle chase</div>
-            </div>
-            <div class="tile">
-              <div class="caps"><kbd>Space</kbd></div>
-              <div class="t-name">Reset</div>
-              <div class="t-hint">fresh start</div>
-            </div>
-          </div>
-          <div class="orbit-hint">drag to orbit &middot; scroll to zoom &middot; <b>M</b> swaps legs for roller skates</div>
-        </section>
-        <section class="extras">
-          <div class="x-item">
-            <span class="x-label">Gamepad</span>
-            Plug one in, same mapping as the real robot.
-          </div>
-          <div class="x-item">
-            <span class="x-label">Live ghosts</span>
-            Other visitors appear as translucent ducks.
-          </div>
-        </section>
-        <div class="cta">
-          <button id="welcome-go">Waddle in</button>
+    <div id="welcome" hidden role="dialog" aria-modal="true" aria-label="Microduck">
+      <div class="wstep" id="wstep-0">
+        <div class="wbrand" aria-hidden="true">
+          <span class="wbrand-head">
+            <img class="duck-closed" id="wbrand-head-closed" alt="" />
+            <img class="duck-open" id="wbrand-head-open" alt="" />
+          </span>
+          <span class="wbrand-name">MicroDuck</span>
         </div>
-        <div class="fineprint">click the title anytime to see this again</div>
+        <div class="facts">
+          <span>$399</span>
+          <span>Ships before Christmas 2026</span>
+        </div>
+        <h1 class="title">A tiny biped you drive in the browser</h1>
+        <p class="tagline">Same body, same policies as the real robot.</p>
+        <div class="grid grid-kb">
+          <div class="tile">
+            <div class="caps cluster">
+              <span class="krow"><kbd>&uarr;</kbd></span>
+              <span class="krow"><kbd>&larr;</kbd><kbd>&darr;</kbd><kbd>&rarr;</kbd></span>
+            </div>
+            <div class="t-name">Move</div>
+            <div class="t-hint">arrows or ZQSD</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><span class="krow"><kbd>A</kbd><kbd>E</kbd></span></div>
+            <div class="t-name">Kick</div>
+            <div class="t-hint">left / right</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>R</kbd></div>
+            <div class="t-name">Roll</div>
+            <div class="t-hint">barrel roll</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>B</kbd></div>
+            <div class="t-name">Ball</div>
+            <div class="t-hint">pop one in</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>C</kbd></div>
+            <div class="t-name">Camera</div>
+            <div class="t-hint">toggle chase</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>Space</kbd></div>
+            <div class="t-name">Reset</div>
+            <div class="t-hint">fresh start</div>
+          </div>
+        </div>
+        <div class="grid grid-pad">
+          <div class="tile">
+            <div class="caps"><kbd>LS</kbd></div>
+            <div class="t-name">Move</div>
+            <div class="t-hint">left stick</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><span class="krow"><kbd>LB</kbd><kbd>RB</kbd></span></div>
+            <div class="t-name">Kick</div>
+            <div class="t-hint">left / right</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>X</kbd></div>
+            <div class="t-name">Roll</div>
+            <div class="t-hint">barrel roll</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>Y</kbd></div>
+            <div class="t-name">Ball</div>
+            <div class="t-hint">pop one in</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>RS</kbd></div>
+            <div class="t-name">Camera</div>
+            <div class="t-hint">orbit</div>
+          </div>
+          <div class="tile">
+            <div class="caps"><kbd>&darr;</kbd></div>
+            <div class="t-name">Sit</div>
+            <div class="t-hint">stand up</div>
+          </div>
+        </div>
+        <p class="orbit-hint kb-hint">drag to orbit &middot; scroll to zoom</p>
+        <p class="orbit-hint pad-hint">R3 chase &middot; RT quack</p>
+      </div>
+
+      <div class="foot">
+        <button type="button" class="wbtn" id="welcome-cta">Waddle in</button>
       </div>
     </div>
 
     <script>
-      // Welcome modal: shown on every load, dismissible by button, Escape
-      // or clicking the blurred backdrop. The top-left brand reopens it.
+      // Single-page title / pause menu: pitch + controls + CTA. The first
+      // "Waddle in" cues the BIOS; later Esc / the in-game Menu button
+      // reopen it as pause. The in-game quickbar (bottom-left) picks the
+      // colour and locomotion live: colour clicks the hidden #swatches
+      // buttons, loco goes through rl.setLoco via a small reconciler that
+      // retries until the game allows the switch (mid-roll, respawn, ...).
       (() => {
         const modal = document.getElementById("welcome");
-        // Logo images need the same ?__sign JWT as every other subresource
-        // on the private Space (rl.js hasn't installed its signer yet).
         const sign = new URLSearchParams(location.search).get("__sign");
         const signedUrl = (u) => (sign ? `${u}?__sign=${encodeURIComponent(sign)}` : u);
-        document.getElementById("logo-head-closed").src = signedUrl("./assets/duck-head-mark.webp");
-        document.getElementById("logo-head-open").src = signedUrl("./assets/duck-head-mark-open.webp");
+        document.getElementById("wbrand-head-closed").src = signedUrl("./assets/duck-head-mark.webp");
+        document.getElementById("wbrand-head-open").src = signedUrl("./assets/duck-head-mark-open.webp");
+
+        const cta = document.getElementById("welcome-cta");
+
+        // ── Quickbar: colour + locomotion, applied live ─────────────────
+        const want = { color: "classic", loco: "legs" };
+        const gameSwatch = (name) =>
+          document.querySelector(`#swatches button[aria-label="${name} colours"]`);
+        const reconcile = () => {
+          let done = true;
+          const g = gameSwatch(want.color);
+          if (g) {
+            syncDotColors();
+            if (!g.classList.contains("on")) g.click();
+          } else done = false;
+          const rl = window.rl;
+          if (rl) {
+            if (want.loco === "rollers") rl.ensureRollers().catch(() => {});
+            if (rl.loco !== want.loco) {
+              done = false;
+              if (!rl.locoSwitching) rl.setLoco(want.loco);
+            }
+          } else if (want.loco !== "legs") done = false;
+          return done;
+        };
+        let reconciler = null;
+        const kick = () => {
+          if (reconciler || reconcile()) return;
+          reconciler = setInterval(() => {
+            if (reconcile()) { clearInterval(reconciler); reconciler = null; }
+          }, 250);
+        };
+
+        const DOTS = { classic: "#ff7a2f", charcoal: "#2f2f33", purple: "#7a5fc9", blue: "#6f9ec4" };
+        const dotsEl = document.getElementById("quick-colors");
+        const dotBtns = new Map();
+        for (const [name, hex] of Object.entries(DOTS)) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.setAttribute("aria-label", `${name} colours`);
+          const dot = document.createElement("span");
+          dot.className = "dot";
+          dot.style.background = hex;
+          b.appendChild(dot);
+          b.addEventListener("click", () => { want.color = name; syncPickers(); kick(); });
+          dotsEl.appendChild(b);
+          dotBtns.set(name, b);
+        }
+        const syncDotColors = () => {
+          for (const [name, b] of dotBtns) {
+            const g = gameSwatch(name);
+            if (g) b.querySelector(".dot").style.background = g.style.background;
+          }
+        };
+
+        const segBtns = [...document.querySelectorAll("#quick-loco button")];
+        for (const b of segBtns) {
+          b.addEventListener("click", () => { want.loco = b.dataset.loco; syncPickers(); kick(); });
+        }
+        const syncPickers = () => {
+          for (const [name, b] of dotBtns) {
+            b.classList.toggle("on", name === want.color);
+            b.setAttribute("aria-pressed", String(name === want.color));
+          }
+          for (const b of segBtns) {
+            b.classList.toggle("on", b.dataset.loco === want.loco);
+            b.setAttribute("aria-pressed", String(b.dataset.loco === want.loco));
+          }
+        };
+        syncPickers();
+        // Reflect game-side switches (M key, pad hold) back into the bar.
+        setInterval(() => {
+          if (reconciler) return;
+          const on = document.querySelector("#swatches button.on");
+          if (on) want.color = (on.getAttribute("aria-label") || "").split(" ")[0] || want.color;
+          if (window.rl && !window.rl.locoSwitching) want.loco = window.rl.loco;
+          syncDotColors();
+          syncPickers();
+        }, 500);
+
+        const pollPad = () => {
+          const gp = [...(navigator.getGamepads?.() ?? [])].find((p) => p && p.connected);
+          document.body.classList.toggle("pad-connected", !!gp);
+        };
+        window.addEventListener("gamepadconnected", pollPad);
+        window.addEventListener("gamepaddisconnected", pollPad);
+        pollPad();
+
+        // ── Menu open / close ────────────────────────────────────────────
         const open = () => {
           modal.hidden = false;
           modal.classList.remove("closing");
+          document.body.classList.add("welcome-open");
+          document.dispatchEvent(new CustomEvent("microduck:menu-open"));
+          cta.textContent = window.__microduckEntered ? "Resume" : "Waddle in";
         };
         const close = () => {
           modal.classList.add("closing");
+          document.body.classList.remove("welcome-open");
+          document.dispatchEvent(new CustomEvent("microduck:menu-close"));
           setTimeout(() => { modal.hidden = true; }, 380);
-          // First dismissal only: cue the BIOS boot replay in rl.js. The
-          // flag covers the race where the user enters before the module
-          // has finished evaluating.
           if (!window.__microduckEntered) {
             window.__microduckEntered = true;
             document.dispatchEvent(new CustomEvent("microduck:enter"));
           }
         };
-        open();
-        document.getElementById("welcome-go").addEventListener("click", close);
-        modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+
+        // Pre-boot veil: hold the title page until its logo and the fonts
+        // are in (grey spinner meanwhile), capped so a broken asset can
+        // never wall the menu off.
+        const preboot = document.getElementById("preboot");
+        const dropPreboot = () => {
+          preboot.classList.add("off");
+          setTimeout(() => preboot.remove(), 300);
+        };
+        if (new URLSearchParams(location.search).get("boot") === "1") {
+          modal.hidden = true;
+          window.__microduckEntered = true;
+          dropPreboot();
+          document.dispatchEvent(new CustomEvent("microduck:enter"));
+        } else {
+          const headImg = document.getElementById("wbrand-head-closed");
+          const imgReady = new Promise((res) => {
+            if (headImg.complete && headImg.naturalWidth) res();
+            else {
+              headImg.addEventListener("load", res, { once: true });
+              headImg.addEventListener("error", res, { once: true });
+            }
+          });
+          const fontsReady = document.fonts?.ready ?? Promise.resolve();
+          const cap = new Promise((res) => setTimeout(res, 2500));
+          Promise.race([Promise.all([imgReady, fontsReady]), cap]).then(() => {
+            open();
+            dropPreboot();
+          });
+        }
+        cta.addEventListener("click", close);
+        document.getElementById("back-btn").addEventListener("click", open);
+        const biosUp = () => document.getElementById("loading")?.style.display === "flex";
         window.addEventListener("keydown", (e) => {
-          if (e.code === "Escape" && !modal.hidden) close();
+          if (e.code === "Enter" && !modal.hidden) {
+            if (e.target instanceof HTMLButtonElement && e.target !== cta) return;
+            e.preventDefault();
+            close();
+            return;
+          }
+          if (e.code !== "Escape") return;
+          if (biosUp()) return;
+          if (!modal.hidden) {
+            if (window.__microduckEntered) close();
+            return;
+          }
+          if (window.__microduckEntered) open();
         });
-        document.getElementById("brand").addEventListener("click", open);
       })();
     </script>
 
@@ -764,7 +1197,7 @@
          appended: a plain src attribute can 401 when the browser blocks the
          *.static.hf.space auth cookie inside the hub iframe. -->
     <script type="module">
-      const V = "35"; // bump on rl.js changes to defeat heuristic caching
+      const V = "65"; // bump on rl.js changes to defeat heuristic caching
       const sign = new URLSearchParams(location.search).get("__sign");
       const suffix = sign ? `&__sign=${encodeURIComponent(sign)}` : "";
       import(`./rl.js?v=${V}${suffix}`);
