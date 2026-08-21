@@ -31,7 +31,7 @@ import {
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
-  JUKEBOX_H, JUKEBOX_MARGIN, JUKEBOX_YAW, JUKEBOX_HALF,
+  ARCADE_H, ARCADE_W, ARCADE_D, ARCADE_GAP, ARCADE_WALL_GAP,
 } from "./constants.js";
 import {
   buildRig, cloneRig, loadKinematics, setJoint, setJawOpen, MODEL_DIR, MESH_VERSION,
@@ -175,18 +175,15 @@ async function boot({ scene, camera, renderer }) {
         el("geom", { name: w.name, type: "box", pos: w.pos, size: w.size }),
       );
     }
-    // Jukebox corner prop: one static box matching the visual's footprint
-    // so the duck and ball can't clip through it. Visual placement is in
-    // three.js coords (x, 0, z) with rotation.y = yaw; MJCF is z-up with
-    // x -> x, y -> -z and the same yaw angle.
-    const jOff = ARENA_HALF - JUKEBOX_MARGIN;
-    const jw = Math.cos(JUKEBOX_YAW / 2), jz = Math.sin(JUKEBOX_YAW / 2);
+    // Arcade cabinet row: one static box covering all three cabinets so
+    // the duck and ball can't clip through them. The row sits against the
+    // back (-X) wall, centered on y = 0 (three.js z = 0), axis-aligned.
+    const rowHalfW = (3 * ARCADE_W + 2 * ARCADE_GAP) / 2;
     doc.querySelector("worldbody").appendChild(
       el("geom", {
-        name: "jukebox", type: "box",
-        pos: `${-jOff} ${jOff} ${JUKEBOX_H / 2}`,
-        quat: `${jw} 0 0 ${jz}`,
-        size: JUKEBOX_HALF.join(" "),
+        name: "arcade_row", type: "box",
+        pos: `${-(ARENA_HALF - ARCADE_WALL_GAP - ARCADE_D / 2)} 0 ${ARCADE_H / 2}`,
+        size: `${ARCADE_D / 2} ${rowHalfW} ${ARCADE_H / 2}`,
       }),
     );
     // Kickable ball: a light free sphere (beach-ball feel). MuJoCo has no
@@ -619,7 +616,7 @@ async function boot({ scene, camera, renderer }) {
     }
   })();
 
-  // ── Scene wiring (grid, walls, rig, ball, jukebox) ───────────────────
+  // ── Scene wiring (grid, walls, rig, ball, arcade row) ────────────────
   // The grid/walls carry ceremony-driven uReveal uniforms and per-frame
   // focus updates, so the game owns them; lights and environment live in
   // the R3F layer.
@@ -743,44 +740,54 @@ async function boot({ scene, camera, renderer }) {
     THREE, scene, camera, renderer, fxModule: fx, mesh: ballMesh, group: ballGroup,
   });
 
-  // ── Jukebox prop (corner dressing + static collision box) ───────────
-  // assets/props/jukebox.glb carries two meshes exported from Blender: the
-  // ~39k-tri render mesh and a 500-tri "jukebox_wire" stand-in used only by
-  // the hologram pass (same fxWireGeometry escape hatch as the ball). It
-  // materializes with the duck's ceremony, staggered a beat behind, and
-  // replays on every respawn. Physics-side, buildPhysicsXml plants a
-  // matching static box (constants JUKEBOX_*) so it can't be clipped.
-  let jukeboxGroup = null;
+  // ── Arcade cabinets (wall dressing + static collision box) ──────────
+  // assets/props/arcade.glb carries two meshes: the ~9k-tri render mesh
+  // and a 500-tri "arcade_wire" stand-in used only by the hologram pass
+  // (same fxWireGeometry escape hatch as the ball). Three clones line up
+  // against the back (-X) wall, backs to the wall, screens facing the
+  // arena; each materializes with the duck's ceremony, staggered, and
+  // replays on every respawn. Physics-side, buildPhysicsXml plants one
+  // static box covering the whole row (constants ARCADE_*).
+  let arcadeGroups = null;
   try {
     const gltf = await new GLTFLoader().loadAsync(
-      signed(`./assets/props/jukebox.glb?v=1`),
+      signed(`./assets/props/arcade.glb?v=1`),
     );
-    const jukebox = gltf.scene;
-    const jukeWire = jukebox.getObjectByName("jukebox_wire");
-    jukeWire.removeFromParent();
-    const jukeBox3 = new THREE.Box3().setFromObject(jukebox);
-    const jukeScale = JUKEBOX_H / (jukeBox3.max.y - jukeBox3.min.y);
-    jukebox.scale.setScalar(jukeScale);
-    jukebox.position.y = -jukeBox3.min.y * jukeScale;
-    jukebox.traverse((o) => {
-      if (o.isMesh) o.userData.fxWireGeometry = jukeWire.geometry;
-    });
-    const jukeGroup = new THREE.Group();
-    jukeGroup.add(jukebox);
-    // Back corner, behind the spawn (the duck faces +X), angled toward the
-    // center of the arena so the front panel reads from the play area.
-    jukeGroup.position.set(
-      -(ARENA_HALF - JUKEBOX_MARGIN), 0, -(ARENA_HALF - JUKEBOX_MARGIN),
-    );
-    jukeGroup.rotation.y = JUKEBOX_YAW;
-    scene.add(jukeGroup);
-    jukeboxGroup = jukeGroup;
-    const jukeFx = fx.createWireframeFx();
-    jukeFx.init({ THREE, scene, root: jukeGroup, camera, renderer, hidden: true });
-    ceremony.addPropFx(jukeFx, 0.25);
+    const proto = gltf.scene;
+    const wire = proto.getObjectByName("arcade_wire");
+    wire.removeFromParent();
+    const box3 = new THREE.Box3().setFromObject(proto);
+    const scale = ARCADE_H / (box3.max.y - box3.min.y);
+    proto.scale.setScalar(scale);
+    proto.position.y = -box3.min.y * scale;
+    arcadeGroups = [];
+    for (let i = 0; i < 3; i++) {
+      // clone(true) shares geometry/materials; userData doesn't survive
+      // Object3D.copy (JSON round-trip), so tag the wire geometry after.
+      const cab = proto.clone(true);
+      cab.traverse((o) => {
+        if (o.isMesh) o.userData.fxWireGeometry = wire.geometry;
+      });
+      const group = new THREE.Group();
+      group.add(cab);
+      // Row centered on the back wall's middle, one cabinet-width apart,
+      // back faces almost touching the wall. The GLB fronts +Z; the row
+      // must front +X (toward the spawn), hence the +90 deg yaw.
+      group.position.set(
+        -(ARENA_HALF - ARCADE_D / 2 - ARCADE_WALL_GAP),
+        0,
+        (i - 1) * (ARCADE_W + ARCADE_GAP),
+      );
+      group.rotation.y = Math.PI / 2;
+      scene.add(group);
+      arcadeGroups.push(group);
+      const cabFx = fx.createWireframeFx();
+      cabFx.init({ THREE, scene, root: group, camera, renderer, hidden: true });
+      ceremony.addPropFx(cabFx, 0.25 + i * 0.12);
+    }
   } catch (err) {
     // Decorative only: a missing/broken GLB must never halt the boot.
-    console.warn("[game] jukebox prop disabled:", err);
+    console.warn("[game] arcade props disabled:", err);
   }
 
   // ── Camera: orbit controls + chase cam + reset glide ─────────────────
@@ -1254,7 +1261,7 @@ async function boot({ scene, camera, renderer }) {
     get ballQposAdr() { return ballQposAdr; },
     get chaseCam() { return chaseCam; },
     set chaseCam(v) { chaseCam = !!v; },
-    get jukebox() { return jukeboxGroup; },
+    get arcades() { return arcadeGroups; },
     get camResetActive() { return camResetT0 !== null; },
     get respawnActive() { return ceremony?.respawnActive ?? false; },
     get camPose() {

@@ -65,14 +65,16 @@ export const ARENA_WALL_T = 0.05;
 // column/row of cells exists; the lattice is shifted half a cell in the
 // shaders so the walls land exactly on section lines).
 export const GRID_SECTION = (2 * ARENA_HALF) / 5; // 0.6 m
-// Jukebox corner prop: shared between the visual (game.js places the GLB)
-// and the physics (buildPhysicsXml adds a matching static collision box).
-export const JUKEBOX_H = 0.42; // target height, m
-export const JUKEBOX_MARGIN = 0.24; // center distance from each wall inner face
-export const JUKEBOX_YAW = Math.PI / 4; // angled toward the arena center
-// Collision half-extents in MJCF axes (x, y, z-up). x/y measured from the
-// GLB footprint once normalized to JUKEBOX_H (0.216 x 0.261 m).
-export const JUKEBOX_HALF = [0.109, 0.131, JUKEBOX_H / 2];
+// Arcade cabinet row: three cabinets side by side against the back (-X)
+// wall, screens facing the arena. Shared between the visual (game.js
+// places the GLB clones) and the physics (buildPhysicsXml adds ONE static
+// collision box covering the whole row). Proportions measured from the
+// GLB's natural size (0.524 x 0.587 x 1.0 m, w x d x h).
+export const ARCADE_H = 0.42; // target height, m
+export const ARCADE_W = ARCADE_H * 0.524; // footprint width, ~0.22 m
+export const ARCADE_D = ARCADE_H * 0.5876; // footprint depth, ~0.247 m
+export const ARCADE_GAP = 0.02; // gap between neighbouring cabinets
+export const ARCADE_WALL_GAP = 0.01; // clearance between backs and the wall
 
 // Spawn: center of the middle section cell in the SECOND ROW FROM THE
 // BACK wall. The duck faces +X (identity freejoint quat, walks toward

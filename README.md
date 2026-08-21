@@ -102,8 +102,8 @@ UI intents in).
 - `app/src/game/game.js` fetches the MJCF (`robot_allcollisions.xml`, or
   `robot_allcollisions_rollers.xml` for the roller variant), strips the
   visual geoms, injects a floor, arena walls, a ball, a collision box for
-  the jukebox prop and a STAND keyframe, and compiles it with the official
-  `@mujoco/mujoco` WASM bindings.
+  the arcade cabinet row and a STAND keyframe, and compiles it with the
+  official `@mujoco/mujoco` WASM bindings.
 - Both variants share the exact same policy interface: 61D observation
   (gyro, projected gravity, 14 joint pos/vel, last action, 13D command)
   and 14 position-targets, matching `mjlab_microduck/scripts/infer_policy.py`.
