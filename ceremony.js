@@ -38,6 +38,12 @@ export function createCeremony({
 
   let fxRig = null;
   let fxPrev = null;
+  // Decorative props (addPropFx): each owns a wireframe FX bound to its
+  // own root. They cue whenever the duck's scan cues (entrance and every
+  // respawn), offset by their stagger, and drive on their OWN clock so a
+  // late-finishing prop never extends the input lock or the ceremony's
+  // completion checks.
+  const props = []; // { fx, delayS, at, started, prev }
   let entranceT0 = null;
   let entranceFxCued = false;
   let entranceDone = false;
@@ -60,6 +66,54 @@ export function createCeremony({
     bind();
     fx.start();
     fxPrev = performance.now();
+    propsCue();
+  }
+  function propsCue() {
+    const now = performance.now();
+    for (const p of props) {
+      p.at = now + p.delayS * 1000;
+      p.started = false;
+      p.prev = null;
+    }
+  }
+  function propsHide() {
+    for (const p of props) {
+      p.fx.setProgress(0);
+      p.at = null;
+      p.started = false;
+    }
+  }
+  function propsFinish() {
+    for (const p of props) {
+      if (!p.started) p.fx.start();
+      p.fx.update(1e3);
+      p.at = null;
+    }
+  }
+  // Deterministic screenshot/test hook (setFx): park every prop at the
+  // same scan progress as the duck, detached from the timed driver.
+  function propsSetProgress(v) {
+    for (const p of props) {
+      p.fx.setProgress(v);
+      p.at = null;
+      p.started = false;
+    }
+  }
+  function driveProps() {
+    const now = performance.now();
+    for (const p of props) {
+      if (p.at === null || now < p.at) continue;
+      if (!p.started) {
+        p.fx.start();
+        p.started = true;
+        p.prev = now;
+        continue;
+      }
+      if (p.fx.isDone()) continue;
+      const dt = Math.min((now - p.prev) / 1000, 0.25);
+      p.prev = now;
+      p.fx.update(dt);
+    }
   }
   function fxDrive() {
     if (fxPrev === null || fx.isDone()) return;
@@ -111,6 +165,7 @@ export function createCeremony({
     startCameraReset();
     syncRig();
     fx.setProgress(0);
+    propsHide();
     respawn = { t0: performance.now(), scanCued: false };
   }
 
@@ -131,6 +186,7 @@ export function createCeremony({
   function drive() {
     driveEntrance();
     driveRespawn();
+    driveProps();
   }
 
   function setReveal(floor, wall = floor) {
@@ -146,11 +202,19 @@ export function createCeremony({
     if (p >= 1) {
       fx.start();
       fxForceFinish();
+      propsFinish();
       setLocked(false);
       entranceFinishedResolve();
     } else {
       fx.setProgress(p);
+      propsSetProgress(p);
     }
+  }
+
+  // Register a decorative prop's wireframe FX (already init'd on its own
+  // root, hidden). It materializes delayS after each duck scan cue.
+  function addPropFx(propFx, delayS = 0) {
+    props.push({ fx: propFx, delayS, at: null, started: false, prev: null });
   }
 
   // Boot hidden: clip parked below the feet from the first frame.
@@ -164,6 +228,7 @@ export function createCeremony({
     bind,
     setReveal,
     setFx,
+    addPropFx,
     entranceFinished,
     get entranceDone() { return entranceDone; },
     get respawnActive() { return respawn !== null; },

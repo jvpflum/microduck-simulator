@@ -25,6 +25,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import loadMujoco from "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@3.11.0/mujoco.js";
 import * as ort from "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.mjs";
 
@@ -1359,6 +1360,50 @@ ball = createBallActor({
   THREE, scene, camera, renderer, fxModule: fx, mesh: ballMesh, group: ballGroup,
 });
 
+// ── Jukebox prop (decorative corner dressing, no physics) ────────────────
+// assets/props/jukebox.glb carries two meshes exported from Blender: the
+// ~39k-tri render mesh and a 500-tri "jukebox_wire" stand-in used only by
+// the hologram pass (same fxWireGeometry escape hatch as the ball - the
+// full mesh reads as a solid glowing blob). It materializes with the
+// duck's ceremony, staggered a beat behind, and replays on every respawn.
+const JUKEBOX_H = 0.42; // target height, m: playground-prop scale next to the 0.25 m duck
+const JUKEBOX_MARGIN = 0.24; // center distance from each wall inner face
+let jukeboxGroup = null; // exposed on window.rl for placement tweaks
+try {
+  const gltf = await new GLTFLoader().loadAsync(
+    signed(`./assets/props/jukebox.glb?v=${SELF_V}`),
+  );
+  const jukebox = gltf.scene;
+  const jukeWire = jukebox.getObjectByName("jukebox_wire");
+  jukeWire.removeFromParent();
+  // Normalize whatever scale/centering the export carries: JUKEBOX_H tall,
+  // resting on the floor. The wire proxy shares the render mesh's local
+  // space, so it needs no transform of its own.
+  const jukeBox3 = new THREE.Box3().setFromObject(jukebox);
+  const jukeScale = JUKEBOX_H / (jukeBox3.max.y - jukeBox3.min.y);
+  jukebox.scale.setScalar(jukeScale);
+  jukebox.position.y = -jukeBox3.min.y * jukeScale;
+  jukebox.traverse((o) => {
+    if (o.isMesh) o.userData.fxWireGeometry = jukeWire.geometry;
+  });
+  const jukeGroup = new THREE.Group();
+  jukeGroup.add(jukebox);
+  // Back corner, behind the spawn (the duck faces +X), angled toward the
+  // center of the arena so the front panel reads from the play area.
+  jukeGroup.position.set(
+    -(ARENA_HALF - JUKEBOX_MARGIN), 0, -(ARENA_HALF - JUKEBOX_MARGIN),
+  );
+  jukeGroup.rotation.y = Math.PI / 4;
+  scene.add(jukeGroup);
+  jukeboxGroup = jukeGroup;
+  const jukeFx = fx.createWireframeFx();
+  jukeFx.init({ THREE, scene, root: jukeGroup, camera, renderer, hidden: true });
+  ceremony.addPropFx(jukeFx, 0.25);
+} catch (err) {
+  // Decorative only: a missing/broken GLB must never halt the boot.
+  console.warn("[rl] jukebox prop disabled:", err);
+}
+
 // Comic sticker popups on game events (kick / quack / roll / ball spawn /
 // ghost join). Fully self-contained DOM overlay: delete this import to
 // remove the feature (the `stickers?.pop` hooks then no-op).
@@ -2129,6 +2174,7 @@ window.rl = {
   get ballQposAdr() { return ballQposAdr; },
   get chaseCam() { return chaseCam; },
   set chaseCam(v) { chaseCam = !!v; },
+  get jukebox() { return jukeboxGroup; },
   get camResetActive() { return camResetT0 !== null; },
   get respawnActive() { return ceremony?.respawnActive ?? false; },
   get camPose() {
