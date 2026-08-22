@@ -58,12 +58,20 @@ let clipNonce = 0;
 
 const BOTTOM_PAD = 0.025;
 
+// The band widths and timeline above are tuned for duck-sized targets
+// (~0.35 m tall). Bigger props (the arcade cabinets) scale the spatial
+// constants linearly and the duration by sqrt(scale), so the scan still
+// reads as the same effect instead of a fast flash with hairline bands.
+// Clamped at 1 so duck- and ball-sized targets are untouched.
+const REF_SPAN = 0.35;
+
 export function createWireframeFx() {
   // Per-instance uniforms: duck and ball must not share a scan height.
   const uScanY = { value: -1e3 };
   const uSolidY = { value: -1e3 };
   const uFlicker = { value: 1 };
   const uTime = { value: 0 };
+  const uSpanK = { value: 1 }; // size factor vs REF_SPAN (>= 1)
 
   let ctx = null; // { THREE, scene, root, camera, renderer }
   let t = 0;
@@ -73,6 +81,8 @@ export function createWireframeFx() {
 
   let minY = 0;
   let spanY = 0.3;
+  let durK = 1; // timeline stretch for big targets
+  const totalS = () => TOTAL_S * durK;
 
   const clipClones = new Map();
   let clipSaved = null; // Array<[mesh, originalMat, cloneMat]> while active
@@ -88,6 +98,7 @@ export function createWireframeFx() {
     m = orig.clone();
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uFxSolidY = uSolidY;
+      shader.uniforms.uFxSpanK = uSpanK;
       shader.vertexShader = shader.vertexShader
         .replace("#include <common>", "#include <common>\nvarying vec3 vFxW;")
         .replace(
@@ -97,14 +108,14 @@ export function createWireframeFx() {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
-          "#include <common>\nvarying vec3 vFxW;\nuniform float uFxSolidY;",
+          "#include <common>\nvarying vec3 vFxW;\nuniform float uFxSolidY;\nuniform float uFxSpanK;",
         )
         .replace(
           "#include <clipping_planes_fragment>",
           /* glsl */ `#include <clipping_planes_fragment>
 float fxEdge = 0.0;
 if (vFxW.y > uFxSolidY) discard;
-fxEdge = 1.0 - smoothstep(0.002, 0.018, uFxSolidY - vFxW.y);`,
+fxEdge = 1.0 - smoothstep(0.002 * uFxSpanK, 0.018 * uFxSpanK, uFxSolidY - vFxW.y);`,
         )
         .replace(
           "#include <dithering_fragment>",
@@ -141,7 +152,7 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
 
   function makeWireMaterial(THREE) {
     return new THREE.ShaderMaterial({
-      uniforms: { uScanY, uSolidY, uFlicker, uTime },
+      uniforms: { uScanY, uSolidY, uFlicker, uTime, uSpanK },
       vertexShader: /* glsl */ `
         varying vec3 vW;
         void main() {
@@ -150,13 +161,13 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
           gl_Position = projectionMatrix * viewMatrix * wp;
         }`,
       fragmentShader: /* glsl */ `
-        uniform float uScanY, uSolidY, uFlicker, uTime;
+        uniform float uScanY, uSolidY, uFlicker, uTime, uSpanK;
         varying vec3 vW;
         void main() {
           if (vW.y > uScanY || vW.y < uSolidY) discard;
-          float lead = 1.0 - smoothstep(0.0, 0.06, uScanY - vW.y);
-          float tail = smoothstep(0.0, 0.018, vW.y - uSolidY);
-          float stripes = 0.7 + 0.3 * sin(vW.y * 900.0 - uTime * 45.0);
+          float lead = 1.0 - smoothstep(0.0, 0.06 * uSpanK, uScanY - vW.y);
+          float tail = smoothstep(0.0, 0.018 * uSpanK, vW.y - uSolidY);
+          float stripes = 0.7 + 0.3 * sin(vW.y * 900.0 / uSpanK - uTime * 45.0);
           vec3 c = vec3(1.0, 0.34, 0.06) * (0.55 + 1.6 * lead);
           float a = (0.10 + 0.40 * lead) * stripes * tail * uFlicker;
           gl_FragColor = vec4(c, a);
@@ -188,8 +199,8 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
   }
 
   function applyAt(time) {
-    const scanP = ease(clamp01(time / SCAN_S));
-    const solidP = ease(clamp01((time - SOLID_DELAY_S) / SOLID_S));
+    const scanP = ease(clamp01(time / (SCAN_S * durK)));
+    const solidP = ease(clamp01((time - SOLID_DELAY_S * durK) / (SOLID_S * durK)));
     uFlicker.value = flickerAt(time);
     uTime.value = time;
 
@@ -219,11 +230,16 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
     const box = new THREE.Box3().setFromObject(root);
     minY = Math.min(box.min.y, 0) - BOTTOM_PAD;
     spanY = Math.max(box.max.y - minY, 0.04) * 1.06;
+    // Size adaptation: spatial constants scale linearly with the target's
+    // height, the timeline by sqrt (a 1.7 m cabinet scans in ~2 s, not
+    // 0.9 s at 6x the line speed). >= 1: duck/ball keep the original look.
+    uSpanK.value = Math.max(1, spanY / REF_SPAN);
+    durK = Math.min(Math.sqrt(uSpanK.value), 2.5);
   }
 
   function arm(nextDir, resetT) {
     dir = nextDir;
-    if (resetT) t = nextDir > 0 ? 0 : TOTAL_S;
+    if (resetT) t = nextDir > 0 ? 0 : totalS();
     finished = false;
     computeRange();
     applyClipMaterials();
@@ -258,8 +274,8 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
   function update(dt) {
     if (!playing || finished) return;
     t += dir * dt;
-    if (dir > 0 && t >= TOTAL_S) {
-      t = TOTAL_S;
+    if (dir > 0 && t >= totalS()) {
+      t = totalS();
       applyAt(t);
       finish();
       return;
@@ -283,7 +299,7 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
     dir = 1;
     computeRange();
     applyClipMaterials();
-    t = clamp01(p) * TOTAL_S;
+    t = clamp01(p) * totalS();
     applyAt(t);
   }
 
@@ -306,7 +322,7 @@ gl_FragColor.rgb += fxEdge * vec3(0.95, 0.32, 0.05);`,
     init, start, startReverse, update, isDone, setProgress, restore, dispose,
     get playing() { return playing; },
     get reversing() { return playing && dir < 0; },
-    TOTAL_S,
+    get TOTAL_S() { return totalS(); },
   };
 }
 

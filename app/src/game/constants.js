@@ -70,7 +70,11 @@ export const GRID_SECTION = (2 * ARENA_HALF) / 5; // 0.6 m
 // places the GLB clones) and the physics (buildPhysicsXml adds ONE static
 // collision box covering the whole row). Proportions measured from the
 // GLB's natural size (0.524 x 0.587 x 1.0 m, w x d x h).
-export const ARCADE_H = 0.42; // target height, m
+// Real-world size: a classic upright cabinet is ~1.73 m tall. Next to
+// the 0.25 m duck they tower like furniture around a real Microduck -
+// that's the point. The row of three (each ~0.91 m wide) spans ~2.76 m,
+// just fitting along the 3 m wall.
+export const ARCADE_H = 1.73; // target height, m
 export const ARCADE_W = ARCADE_H * 0.524; // footprint width, ~0.22 m
 export const ARCADE_D = ARCADE_H * 0.5876; // footprint depth, ~0.247 m
 export const ARCADE_GAP = 0.02; // gap between neighbouring cabinets
