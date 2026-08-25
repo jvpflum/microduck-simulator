@@ -1,16 +1,20 @@
-// Single-page title / pause menu: vitrine brand lockup, pitch, controls
-// tutorial (keyboard / gamepad / touch variant) and the CTA. The first
-// "Waddle in" cues the BIOS; later Esc / the in-game Back button reopen it
-// as pause. Rows fade up once, in reading order - the stagger replays on
-// every open because the component remounts.
+// Title / pause overlay: a full-page ink screen printed in the landing's
+// comic DA - big Anton title with the ink-drop + cyan/magenta aberration
+// treatment, a comic-block CTA on an acid plate, and an orange halftone
+// ramp pooling in the top-left corner. Colour and locomotion live in the
+// in-game HUD quickbar, so the intro's only action is Waddle in.
+//
+// The first "Waddle in" cues the BIOS; later Esc / the in-game Back button
+// reopen the overlay as pause ("Resume"). The ?boot=1 bypass lives in
+// App.jsx and never mounts this component.
 import { useEffect, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
-import ButtonBase from "@mui/material/ButtonBase";
 import { keyframes, styled } from "@mui/material/styles";
 import { useGame } from "../store.js";
 import { signed } from "../game/signed.js";
-import { INK, ORANGE } from "../theme.js";
+import { INK, ORANGE, MONO } from "../theme.js";
+import { ComicButton, ComicTitle, HalftoneRamp, ANTON } from "./comic.jsx";
 
 const rowIn = keyframes`
   from { transform: translateY(12px); opacity: 0; }
@@ -50,7 +54,7 @@ const TILES = {
     { caps: "cluster-arrows", name: "Move", hint: "arrows or ZQSD" },
     { caps: ["A", "E"], name: "Kick", hint: "left / right" },
     { caps: ["R"], name: "Roll", hint: "barrel roll" },
-    { caps: ["B"], name: "Ball", hint: "pop a fresh one" },
+    { caps: ["G"], name: "Pick up", hint: "beak to the ground" },
     { caps: ["C"], name: "Camera", hint: "toggle chase" },
     { caps: ["Space"], name: "Reset", hint: "fresh start" },
   ],
@@ -58,9 +62,9 @@ const TILES = {
     { caps: ["LS"], name: "Move", hint: "left stick" },
     { caps: ["LB", "RB"], name: "Kick", hint: "left / right" },
     { caps: ["X"], name: "Roll", hint: "barrel roll" },
-    { caps: ["Y"], name: "Ball", hint: "pop a fresh one" },
+    { caps: ["Y"], name: "Head", hint: "sticks move the head" },
     { caps: ["RS"], name: "Camera", hint: "orbit" },
-    { caps: ["\u2193"], name: "Sit", hint: "stand up" },
+    { caps: ["\u2193"], name: "Sit", hint: "tap again to stand" },
   ],
   touch: [
     { caps: ["Stick"], name: "Move", hint: "left thumb" },
@@ -70,7 +74,7 @@ const TILES = {
 };
 const HINTS = {
   kb: "drag to orbit \u00b7 scroll to zoom",
-  pad: "R3 chase \u00b7 RT quack",
+  pad: "A ground pick \u00b7 RT quack \u00b7 hold LT wheee \u00b7 R3 chase",
   touch: "drag to orbit \u00b7 pinch to zoom",
 };
 
@@ -124,8 +128,9 @@ export default function TitleMenu() {
   if (!menuOpen && !closing) return null;
 
   // A plugged-in gamepad wins over the touch tutorial.
-  const variant = padConnected ? "pad" : touchMode ? "touch" : "kb";
-  const tiles = TILES[variant];
+  const tutorialVariant = padConnected ? "pad" : touchMode ? "touch" : "kb";
+  const tiles = TILES[tutorialVariant];
+  const ctaLabel = entered ? "Resume" : "Waddle in";
 
   return (
     <Box
@@ -148,10 +153,26 @@ export default function TitleMenu() {
         transition: "opacity 0.35s ease, background 0.4s ease",
       }}
     >
-      <Box sx={{ width: "100%", maxWidth: "min(48rem, 92vw)", textAlign: "center" }}>
-        {/* Vitrine brand lockup, centered above the title: drawn duck head
-            + name. Hovering swaps to the open-beak frame, same hard sprite
-            swap as the vitrine header. */}
+      {/* Theme-orange halftone pooling in the top-left corner, dots
+          growing toward it - the landing's screen-tone on ink ground. */}
+      <HalftoneRamp
+        color="rgba(255, 122, 47, 0.16)"
+        size={20}
+        corner="top-left"
+        reach={60}
+      />
+
+      <Box
+        sx={{
+          position: "relative",
+          width: "100%",
+          maxWidth: "min(48rem, 92vw)",
+          textAlign: "center",
+          m: "auto 0",
+        }}
+      >
+        {/* Vitrine brand lockup: drawn duck head + name. Hovering swaps to
+            the open-beak frame, same hard sprite swap as the vitrine. */}
         <Box
           aria-hidden
           sx={{
@@ -159,8 +180,8 @@ export default function TitleMenu() {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: "0.55rem",
-            mb: "1.3rem",
+            gap: "0.5rem",
+            mb: "1.15rem",
             userSelect: "none",
             ...row(0, brandIn),
             "&:hover .duck-closed": { opacity: 0 },
@@ -173,6 +194,7 @@ export default function TitleMenu() {
               position: "relative",
               display: "block",
               height: { xs: "2.4rem", sm: "3rem" },
+              filter: "drop-shadow(3px 3px 0 rgba(0, 0, 0, 0.5))",
             }}
           >
             <Box
@@ -183,9 +205,8 @@ export default function TitleMenu() {
               sx={{ display: "block", height: "100%", width: "auto" }}
             />
             {/* The open frame's canvas (460x333) is a hair wider/taller
-                than the closed one (454x269): the dropped jaw sticks out
-                past the head. Offsets pin the head in place while the jaw
-                hangs below. */}
+                than the closed one (454x269); offsets pin the head while
+                the jaw hangs below. */}
             <Box
               component="img"
               className="duck-open"
@@ -202,69 +223,29 @@ export default function TitleMenu() {
               }}
             />
           </Box>
-          <Box
-            component="span"
-            sx={{
-              fontWeight: 700,
-              letterSpacing: "-0.03em",
-              fontSize: { xs: "1.3rem", sm: "1.6rem" },
-              color: "#fff",
-            }}
-          >
-            MicroDuck
-          </Box>
         </Box>
 
-        <Box
-          sx={{
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: "0.6rem",
-            mb: "1.15rem",
-            fontSize: "0.72rem",
-            fontWeight: 600,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: "rgba(255, 255, 255, 0.78)",
-            ...row(0.08),
-            "& span:not(:last-child)::after": {
-              content: '"\u00b7"',
-              color: ORANGE,
-              pl: "0.6em",
-            },
-          }}
-        >
-          <span>MuJoCo physics</span>
-          <span>ONNX policies at 50 Hz</span>
-        </Box>
-
-        {/* Landing-grade h1: same type conventions as the vitrine hero. */}
-        <Typography
+        {/* The landing hero's mistracked-VHS treatment: orange fill with
+            ink drop + chroma ghosts, hollow echo line below. */}
+        <ComicTitle
           component="h1"
-          sx={{
-            m: "0 auto",
-            maxWidth: "24ch",
-            fontSize: { xs: "2rem", sm: "clamp(2.4rem, 5vw, 3.75rem)" },
-            fontWeight: 600,
-            letterSpacing: "-0.03em",
-            color: "#fff",
-            lineHeight: 1.02,
-            textWrap: "balance",
-            ...row(0.16),
-          }}
-        >
-          The Microduck simulator, live in your browser
-        </Typography>
+          tone="dark"
+          accent={ORANGE}
+          fontSize="clamp(3.1rem, 10vw, 5.4rem)"
+          lines={[
+            { text: "Microduck" },
+            { text: "Simulator", variant: "outline", scale: 0.6 },
+          ]}
+          sx={{ ...row(0.08) }}
+        />
+
         <Typography
           sx={{
             mx: "auto",
-            mt: "1.25rem",
-            mb: 0,
-            "@media (max-height: 700px)": { mt: "0.85rem" },
+            mt: "1.1rem",
+            "@media (max-height: 700px)": { mt: "0.8rem" },
             maxWidth: "36ch",
-            fontSize: { xs: "0.95rem", sm: "clamp(1.05rem, 1.5vw, 1.3rem)" },
+            fontSize: { xs: "0.95rem", sm: "1.05rem" },
             lineHeight: 1.5,
             letterSpacing: "-0.012em",
             color: "rgba(255, 255, 255, 0.72)",
@@ -272,18 +253,22 @@ export default function TitleMenu() {
             ...row(0.24),
           }}
         >
-          The exact same trained policies that drive the real robot.
+          The exact same trained policies that drive the real robot,
+          live in your browser.
         </Typography>
 
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: {
-              xs: variant === "touch" ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
-              sm: "repeat(3, 1fr)",
+            // Three columns from ~500px up (two rows of tiles); narrow
+            // phones fall back to two.
+            gridTemplateColumns:
+              tutorialVariant === "touch" ? "repeat(3, 1fr)" : "repeat(2, 1fr)",
+            "@media (min-width: 500px)": {
+              gridTemplateColumns: "repeat(3, 1fr)",
             },
             gap: "0.55rem",
-            m: "1.4rem auto 0",
+            m: "1.35rem auto 0",
             maxWidth: "36rem",
             ...row(0.32),
           }}
@@ -292,9 +277,8 @@ export default function TitleMenu() {
             <Box
               key={t.name}
               sx={{
-                p: { xs: "0.65rem 0.35rem 0.6rem", sm: "0.85rem 0.45rem 0.75rem" },
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                borderRadius: "18px",
+                p: { xs: "0.65rem 0.35rem 0.6rem", sm: "0.8rem 0.45rem 0.7rem" },
+                border: "1px solid rgba(255, 255, 255, 0.09)",
                 background: "rgba(255, 255, 255, 0.035)",
               }}
             >
@@ -306,7 +290,8 @@ export default function TitleMenu() {
                   justifyContent: "center",
                   gap: "0.2rem",
                   height: { xs: "2.8rem", sm: "3.3rem" },
-                  // Arrow cluster keycaps are a notch smaller so two rows fit
+                  // Arrow-cluster keycaps are a notch smaller so two rows
+                  // fit.
                   "& .cluster kbd": {
                     minWidth: "1.4rem",
                     height: "1.4rem",
@@ -318,7 +303,12 @@ export default function TitleMenu() {
                 {t.caps === "cluster-arrows" ? (
                   <Box
                     className="cluster"
-                    sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.2rem" }}
+                    sx={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "0.2rem",
+                    }}
                   >
                     <Box sx={{ display: "flex", gap: "0.22rem", justifyContent: "center" }}>
                       <Kbd>{"\u2191"}</Kbd>
@@ -339,10 +329,11 @@ export default function TitleMenu() {
               </Box>
               <Box
                 sx={{
-                  mt: "0.55rem",
-                  fontSize: "0.72rem",
-                  fontWeight: 600,
-                  letterSpacing: "-0.01em",
+                  mt: "0.5rem",
+                  fontFamily: ANTON,
+                  fontSize: "0.8rem",
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
                   color: "#fff",
                 }}
               >
@@ -350,10 +341,10 @@ export default function TitleMenu() {
               </Box>
               <Box
                 sx={{
-                  mt: "0.18rem",
-                  fontSize: "0.62rem",
+                  mt: "0.16rem",
+                  fontSize: "0.6rem",
                   fontWeight: 600,
-                  letterSpacing: "0.12em",
+                  letterSpacing: "0.11em",
                   textTransform: "uppercase",
                   color: ORANGE,
                 }}
@@ -366,63 +357,38 @@ export default function TitleMenu() {
 
         <Typography
           sx={{
-            mt: "1rem",
-            fontSize: "0.68rem",
+            mt: "0.85rem",
+            fontFamily: MONO,
+            fontSize: "0.64rem",
             fontWeight: 600,
-            letterSpacing: "0.08em",
-            color: "rgba(255, 255, 255, 0.4)",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "rgba(255, 255, 255, 0.38)",
+            ...row(0.4),
+          }}
+        >
+          {HINTS[tutorialVariant]}
+        </Typography>
+
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "center",
+            mt: "1.7rem",
+            "@media (max-height: 700px)": { mt: "1.2rem" },
             ...row(0.48),
           }}
         >
-          {HINTS[variant]}
-        </Typography>
-      </Box>
-
-      <Box
-        sx={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "1rem",
-          mt: "1.6rem",
-          "@media (max-height: 700px)": { mt: "1.1rem" },
-          width: "100%",
-          ...row(0.56),
-        }}
-      >
-        <ButtonBase
-          data-cta="1"
-          onClick={closeMenu}
-          focusRipple
-          sx={{
-            border: `3px solid ${INK}`,
-            background: ORANGE,
-            color: INK,
-            font: "inherit",
-            fontSize: { xs: "0.95rem", sm: "1.02rem" },
-            fontWeight: 600,
-            letterSpacing: "-0.01em",
-            p: { xs: "0.75rem 1.5rem", sm: "0.85rem 1.9rem" },
-            borderRadius: "999px",
-            boxShadow: "0 0 0 3px #fff",
-            cursor: "pointer",
-            transition: "transform 0.2s ease, box-shadow 0.2s ease",
-            "&:hover": {
-              transform: "translateY(-2px)",
-              boxShadow: "0 0 0 3px #fff, 0 10px 26px rgba(255, 122, 47, 0.3)",
-            },
-            "&:active": {
-              transform: "translateY(1px)",
-              boxShadow: "0 0 0 3px #fff",
-            },
-            "&.Mui-focusVisible": {
-              outline: "2px solid #fff",
-              outlineOffset: "4px",
-            },
-          }}
-        >
-          {entered ? "Resume" : "Waddle in"}
-        </ButtonBase>
+          <ComicButton
+            scheme="orange"
+            size="medium"
+            onDark
+            data-cta="1"
+            onClick={closeMenu}
+          >
+            {ctaLabel}
+          </ComicButton>
+        </Box>
       </Box>
     </Box>
   );

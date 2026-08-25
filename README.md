@@ -40,7 +40,6 @@ and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
 - M: switch legs <-> rollers
 - Q / E (A / E on AZERTY): kick left / right (legs only)
 - R: roll (legs) / crouch-glide (rollers)
-- B: pop / respawn a kickable ball in front of the duck
 - C: toggle the chase camera (on by default; dragging detaches it)
 - Space: reset
 - Drag to orbit, scroll to zoom
@@ -69,7 +68,6 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 - Right stick: orbit the camera (detaches the chase cam)
 - R3 (right stick click): toggle the chase cam back on
 - X: roll (legs) / crouch-glide (rollers)
-- Y: pop / respawn the ball
 - RB / LB: right / left kick (legs only)
 - D-pad down: sit / stand toggle (legs only)
 - D-pad up: hold ~1 s to switch legs <-> rollers (the real robot uses a 3 s hold)

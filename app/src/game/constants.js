@@ -9,6 +9,12 @@ export const POLICIES = {
   // the runtime swaps these in for a 0.5 s window, commands zeroed.
   kickL: `${POLICY_DIR}/ball_kick_left.onnx`,
   kickR: `${POLICY_DIR}/ball_kick_right.onnx`,
+  // One-shot ground pick (runtime A button): peck the ground and stand
+  // back up, phase-driven via [cos, sin, 0] in the command vel slots.
+  groundpick: `${POLICY_DIR}/alpha_ground_pick.onnx`,
+  // Get-up policy for the automatic fall recovery (runtime --fall-detect):
+  // same 61D obs layout as the other alpha policies, commands all zeroed.
+  stand: `${POLICY_DIR}/BEST_alpha_stand.onnx`,
   // Roller variant (lazy-loaded on first switch, never at boot):
   // drive = velocity-tracking skating, crouch = one-shot crouch-glide
   // driven by a phase encoding in the command slots (ground-pick style).
@@ -51,6 +57,11 @@ export const RVEL_FWD = 0.6, RVEL_BACK = -0.5, RVEL_ANG = 0.3;
 // against (mjlab CROUCH_PERIOD = 5.0, cycle end 0.7 => 3.5 s gesture).
 export const CROUCH_PERIOD_S = 5.0;
 export const CROUCH_END_PHASE = 0.7;
+// Ground-pick one-shot (legs): same phase encoding, from the runtime's
+// defaults (--ground-pick-period 4.0, cycle exiting at 0.7 => ~2.8 s
+// gesture, action scale and kP untouched at their 1.0 defaults).
+export const GROUND_PICK_PERIOD_S = 4.0;
+export const GROUND_PICK_END_PHASE = 0.7;
 
 // Kickable ball: radius and parking spot (far away = hidden by default).
 export const BALL_RADIUS = 0.05;
@@ -65,16 +76,16 @@ export const ARENA_WALL_T = 0.05;
 // column/row of cells exists; the lattice is shifted half a cell in the
 // shaders so the walls land exactly on section lines).
 export const GRID_SECTION = (2 * ARENA_HALF) / 5; // 0.6 m
-// Arcade cabinet row: three cabinets side by side against the back (-X)
-// wall, screens facing the arena. Shared between the visual (game.js
-// places the GLB clones) and the physics (buildPhysicsXml adds ONE static
-// collision box covering the whole row). Proportions measured from the
-// GLB's natural size (0.524 x 0.587 x 1.0 m, w x d x h).
-// Real-world size: a classic upright cabinet is ~1.73 m tall. Next to
-// the 0.25 m duck they tower like furniture around a real Microduck -
-// that's the point. The row of three (each ~0.91 m wide) spans ~2.76 m,
-// just fitting along the 3 m wall.
-export const ARCADE_H = 1.73; // target height, m
+// Arcade cabinet row: three cabinets side by side against the front (+X)
+// wall, screens facing the arena. Consumed by the prop library (props.js
+// "arcade" def - currently benched, enabled: false) for both the clone
+// placements and the row's single static collision box. Proportions
+// measured from the GLB's natural size (0.524 x 0.587 x 1.0 m, w x d x h).
+// Slightly surreal scale: ~2.8x the 0.25 m duck (a real 1.73 m cabinet
+// felt overwhelming in the 3 m arena). Big enough to read as oversized
+// furniture, small enough that the row (~1.15 m wide, 0.41 m deep)
+// leaves the play area open.
+export const ARCADE_H = 0.7; // target height, m
 export const ARCADE_W = ARCADE_H * 0.524; // footprint width, ~0.22 m
 export const ARCADE_D = ARCADE_H * 0.5876; // footprint depth, ~0.247 m
 export const ARCADE_GAP = 0.02; // gap between neighbouring cabinets

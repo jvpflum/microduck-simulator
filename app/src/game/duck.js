@@ -4,14 +4,13 @@
 // local rotations driven by setJointAngles / setJoint.
 
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { mergeVertices, toCreasedNormals } from "three/addons/utils/BufferGeometryUtils.js";
 
-// Cache-busting version appended to every STL request. python http.server
-// sends no Cache-Control, so browsers apply heuristic caching keyed on
-// Last-Modified and can keep serving stale mesh bytes even after the files
-// change on disk. Bump this whenever the mesh files are regenerated.
-export const MESH_VERSION = "8";
+// Cache-busting version appended to the GLB / kinematics / leftover STL
+// fetches. Bump whenever microduck.glb is regenerated.
+export const MESH_VERSION = "11";
 
 // Default model directory: the complete mjlab export (converted from
 // robot_walk.xml by tools/mjcf_to_kinematics.py). robot/v1.5/ and
@@ -31,7 +30,7 @@ import { signed } from "./signed.js";
 const HIDDEN_MESHES = new Set([]);
 
 export async function loadKinematics(url) {
-  // Same cache-buster as the STLs: force-cache would otherwise keep
+  // Same cache-buster as the GLB: force-cache would otherwise keep
   // serving a stale kinematics.json after the mesh list changes.
   const r = await fetch(signed(`${url}?v=${MESH_VERSION}`), { cache: "force-cache" });
   if (!r.ok) throw new Error(`kinematics fetch ${r.status}`);
@@ -43,6 +42,81 @@ export async function loadKinematics(url) {
     k.mesh_dir = k.mesh_dir.replace(/\/meshes$/, "/meshes-lite");
   }
   return k;
+}
+
+// One GLB, named meshes matching kinematics geom.mesh (e.g. "left_shell.stl").
+// Positions are already welded (same 1e-4 m hash as mergeVertices). STL
+// facet normals are omitted on purpose: creased normals are rebuilt here.
+const GLB_URL = `${MODEL_DIR}/microduck.glb`;
+const CREASE = Math.PI / 5; // 36 deg
+let glbGeomsPromise = null;
+
+export function loadGlbGeometries() {
+  if (!glbGeomsPromise) {
+    glbGeomsPromise = new GLTFLoader()
+      .loadAsync(signed(`${GLB_URL}?v=${MESH_VERSION}`))
+      .then((gltf) => {
+        const map = new Map();
+        gltf.scene.traverse((o) => {
+          if (!o.isMesh || !o.geometry) return;
+          const name = o.userData.meshFile || o.name || o.geometry.name;
+          if (!name || map.has(name)) return;
+          const welded = o.geometry;
+          welded.deleteAttribute("normal");
+          // toCreasedNormals hashes on a 0.01-unit grid. Meshes are in
+          // metres, so scale a clone to mm (10 um grid) then back.
+          const scaled = welded.clone();
+          scaled.scale(1000, 1000, 1000);
+          const display = toCreasedNormals(scaled, CREASE);
+          display.scale(1e-3, 1e-3, 1e-3);
+          const entry = { display, welded };
+          map.set(name, entry);
+          if (o.name && o.name !== name) map.set(o.name, entry);
+        });
+        return map;
+      });
+  }
+  return glbGeomsPromise;
+}
+
+// MuJoCo's WASM compiler still wants binary STL in its VFS. Rebuild from
+// the already-loaded GLB so the browser never re-downloads the mesh files.
+export function geometryToBinaryStl(geometry) {
+  const pos = geometry.attributes.position;
+  const idx = geometry.index;
+  const triCount = (idx ? idx.count : pos.count) / 3;
+  const buf = new ArrayBuffer(84 + triCount * 50);
+  const view = new DataView(buf);
+  view.setUint32(80, triCount, true);
+  let off = 84;
+  const vx = (i) => {
+    const j = idx ? idx.getX(i) : i;
+    return [pos.getX(j), pos.getY(j), pos.getZ(j)];
+  };
+  for (let t = 0; t < triCount; t++) {
+    const a = vx(t * 3);
+    const b = vx(t * 3 + 1);
+    const c = vx(t * 3 + 2);
+    const nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
+    const ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+    const nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    view.setFloat32(off, nx / len, true);
+    view.setFloat32(off + 4, ny / len, true);
+    view.setFloat32(off + 8, nz / len, true);
+    view.setFloat32(off + 12, a[0], true);
+    view.setFloat32(off + 16, a[1], true);
+    view.setFloat32(off + 20, a[2], true);
+    view.setFloat32(off + 24, b[0], true);
+    view.setFloat32(off + 28, b[1], true);
+    view.setFloat32(off + 32, b[2], true);
+    view.setFloat32(off + 36, c[0], true);
+    view.setFloat32(off + 40, c[1], true);
+    view.setFloat32(off + 44, c[2], true);
+    view.setUint16(off + 48, 0, true);
+    off += 50;
+  }
+  return buf;
 }
 
 // Materials are PBR (MeshStandardMaterial), same family as the Reachy
@@ -61,25 +135,16 @@ export async function buildRig(k, opts = {}) {
 
   const bodies = new Map();
   const joints = new Map();
-  const loader = new STLLoader();
-
-  // STL files carry per-facet normals, which shade as a faceted mess.
-  // Weld vertices, then rebuild normals with a crease angle: curved
-  // surfaces smooth out, machined edges stay hard - the cel look needs
-  // both. Two scale/attribute pitfalls here:
-  // - mergeVertices hashes ALL attributes, so the per-facet STL normals
-  //   must be dropped first or coincident vertices never merge.
-  // - toCreasedNormals groups vertices on a fixed 0.01-unit hash grid.
-  //   Our meshes are in meters, so that grid is 1 cm: normals of vertices
-  //   up to a centimeter apart get averaged together, which shades like a
-  //   heavily decimated mesh. Scaling to mm makes the grid 10 um.
-  const CREASE = Math.PI / 5; // 36 deg
-  const meshCache = new Map();
+  const geomByName = await loadGlbGeometries();
+  // Roller-only meshes (tire, rim, ...) are not in the shared landing GLB.
+  const extraStlCache = new Map();
   const loadMesh = (name) => {
-    if (!meshCache.has(name)) {
-      meshCache.set(
+    const entry = geomByName.get(name);
+    if (entry) return Promise.resolve(entry);
+    if (!extraStlCache.has(name)) {
+      extraStlCache.set(
         name,
-        loader.loadAsync(signed(`${k.mesh_dir}/${name}?v=${MESH_VERSION}`)).then((raw) => {
+        new STLLoader().loadAsync(signed(`${k.mesh_dir}/${name}?v=${MESH_VERSION}`)).then((raw) => {
           raw.deleteAttribute("normal");
           const welded = mergeVertices(raw, 1e-4);
           welded.scale(1000, 1000, 1000);
@@ -90,7 +155,7 @@ export async function buildRig(k, opts = {}) {
         }),
       );
     }
-    return meshCache.get(name);
+    return extraStlCache.get(name);
   };
 
   for (const b of k.bodies) {
@@ -215,12 +280,18 @@ export async function buildRig(k, opts = {}) {
 // The mjlab model has no passive jaw joints: jaw.stl / jaw_soft.stl are
 // rigid geoms of the head body (named "jaw_soft" in the MJCF, it carries
 // the head_roll joint). The quack re-creates the hinge in JS: both jaw
-// meshes are reparented into a "jaw_pivot" group
-// whose origin sits on the rear top edge of their combined bounding box
-// (the physical hinge line), and setJawOpen rotates that pivot about the
-// robot's left-right axis so the beak tip swings down.
+// meshes are reparented into a "jaw_pivot" group whose origin sits on the
+// physical hinge, and setJawOpen rotates that pivot about the robot's
+// left-right axis so the beak tip swings down.
 const JAW_MESH_NAMES = new Set(["jaw.stl", "jaw_soft.stl"]);
 export const JAW_MAX_OPEN = 0.32; // rad at openness 1
+
+// The physical hinge: jaw.stl ends in a circular boss (8 mm ring with the
+// axle hole at its center) on each side, hole axis along mesh-local X (the
+// robot's left-right). Circle fitted offline on the STL's hole-wall
+// vertices (RANSAC, 68 inliers, < 0.15 mm spread); x = 0 sits mid-way
+// between the two bosses, on the hinge line.
+const JAW_HINGE_LOCAL = new THREE.Vector3(0, 0.00004, 0.0075);
 
 function setupJawPivot(rig) {
   const meshes = [];
@@ -232,9 +303,8 @@ function setupJawPivot(rig) {
   // The placer is still untransformed right after buildRig, so world
   // coords == placer coords here: robot forward is +X, up is +Y.
   rig.placer.updateWorldMatrix(true, true);
-  const box = new THREE.Box3();
-  for (const m of meshes) box.expandByObject(m);
-  const hingeW = new THREE.Vector3(box.min.x, box.max.y, (box.min.z + box.max.z) / 2);
+  const jawMesh = meshes.find((m) => m.userData.meshName === "jaw.stl") ?? meshes[0];
+  const hingeW = jawMesh.localToWorld(JAW_HINGE_LOCAL.clone());
   // +angle about -Z rotates the +X beak tip toward -Y (down).
   const axisW = new THREE.Vector3(0, 0, -1);
   const bodyQuatInv = body.getWorldQuaternion(new THREE.Quaternion()).invert();
@@ -280,7 +350,7 @@ export function applyPose(rig, pose) {
   for (const [name, ang] of Object.entries(pose)) setJoint(rig, name, ang);
 }
 
-// Deep-clone a built rig without re-parsing the STL files: Object3D.clone
+// Deep-clone a built rig without re-parsing the GLB: Object3D.clone
 // shares geometry and materials, so N clones cost almost nothing on top of
 // the first buildRig. The bodies/joints maps are rebuilt by looking up the
 // cloned nodes by name (body names are unique in the MJCF).

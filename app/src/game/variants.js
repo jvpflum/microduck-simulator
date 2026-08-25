@@ -133,6 +133,27 @@ export const VARIANTS = {
 export const VARIANT_NAMES = Object.keys(VARIANTS);
 export const DEFAULT_VARIANT = "classic";
 
+// Official colourway display names, for tooltips/labels only - the
+// internal variant keys above stay unchanged.
+export const VARIANT_LABELS = {
+  classic: "Cream",
+  charcoal: "Graphite",
+  purple: "Lavender",
+  blue: "Sky",
+};
+
+// UI swatch hexes for the HUD colour picker: the press-kit sRGB shell
+// targets, pinned as literals. The sim's material specs above predate the
+// press-kit recalibration, so the picker does NOT derive from them - this
+// table is shared verbatim with the pollen-website landing picker so both
+// show byte-identical chips.
+export const VARIANT_SWATCH_HEX = {
+  classic: "#f7e6cb",
+  charcoal: "#6c6a68",
+  purple: "#bfa9cf",
+  blue: "#a9dbe8",
+};
+
 export const randomVariantName = () =>
   VARIANT_NAMES[Math.floor(Math.random() * VARIANT_NAMES.length)];
 

@@ -1,17 +1,26 @@
-// In-game HUD: Back (top-left), mode readout (top-right, Matrix-style
-// letter scramble on change), quickbar (bottom-left: live colour dots +
-// legs/rollers segment), telemetry stack (bottom-right) and the
-// LOADING ROLLERS line while the roller stack streams in.
+// In-game HUD: Back (top-left), pre-order button (top-right, label flips
+// to "Pre-order pack" while rollers are selected - the rollers ship in the
+// accessory pack), quickbar (bottom-left: colour palette + loco switch),
+// telemetry stack (bottom-right) and the LOADING ROLLERS line while the
+// roller stack streams in.
+//
+// Chrome reads as small comic PANELS: each group sits in a thick cream
+// keyline frame on a dark glass plate (1px ink inset between glass and
+// frame), with a caption box (cartouche) overlapping the frame's corner -
+// flat cream (orange for the shop CTA) fill, ink keyline, hard 2px offset
+// shadow, half in / half out like a caption on a comic panel's edge. Same
+// tokens as the landing (Anton, orange, cream), zero radius everywhere.
+// Title-menu CTAs stay ComicButton.
 //
 // Whole HUD is hidden while the title/pause overlay is up; touch mode
 // strips it down to the thumbs + Back.
 import { useEffect, useRef, useState } from "react";
 import Box from "@mui/material/Box";
-import ButtonBase from "@mui/material/ButtonBase";
 import { keyframes } from "@mui/material/styles";
 import { useGame, gameApi } from "../store.js";
-import { VARIANT_SWATCHES } from "../game/game.js";
-import { INK, ORANGE, MONO } from "../theme.js";
+import { VARIANT_LABELS, VARIANT_SWATCH_HEX } from "../game/variants.js";
+import { ORANGE, MONO } from "../theme.js";
+import { ANTON, COMIC_INK, CREAM } from "./comic.jsx";
 
 // Matrix-style letter scramble: on change every glyph flips through random
 // charset entries, then locks to its target left-to-right over ~0.45 s.
@@ -31,7 +40,6 @@ function useScramble(target) {
     const rnd = () => SCRAMBLE_GLYPHS[(Math.random() * SCRAMBLE_GLYPHS.length) | 0];
     const t0 = performance.now();
     timer.current = setInterval(() => {
-      // Letters 0..k-1 are locked; the rest keep boiling.
       const k = Math.floor(((performance.now() - t0) / DUR) * n);
       if (k >= n) {
         clearInterval(timer.current);
@@ -53,184 +61,319 @@ const recBlink = keyframes`
   59%, 100% { opacity: 0.12; }
 `;
 
-function BackButton() {
+const chipPop = keyframes`
+  0% { transform: scale(0.86); }
+  55% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+`;
+
+const HUD_H = 48;
+const FRAME_W = 2; // cream keyline thickness
+const PANEL_PAD = 5; // air between the frame and the printed content
+// Height left for the cells inside frame + padding; colour swatches use it
+// as their width too so they stay square.
+const CELL_H = HUD_H - 2 * (FRAME_W + PANEL_PAD);
+const CELL_GAP = 4; // gap between cells; the glass ground shows through
+const FRAME = "rgba(250, 248, 242, 0.9)";
+const GLASS = "rgba(8, 8, 12, 0.6)";
+
+// The panel frame: a thick cream keyline (comic ink weight, HUD read)
+// around a dark glass plate, with a 1px ink inset between frame and glass
+// so it reads like a printed panel, and a few px of glass padding so the
+// content has air inside the frame (the glass ground fills the padding).
+// The inset is a pseudo-element so it draws over the cells (an inset
+// box-shadow would be painted under them). Overflow clipping lives on the
+// inner content wrapper, not the plate, so the caption box can hang over
+// the frame's corner.
+const plateSx = {
+  position: "relative",
+  display: "inline-flex",
+  height: HUD_H,
+  boxSizing: "border-box",
+  border: `${FRAME_W}px solid ${FRAME}`,
+  padding: `${PANEL_PAD}px`,
+  borderRadius: 0,
+  background: GLASS,
+  "&::after": {
+    content: '""',
+    position: "absolute",
+    inset: 0,
+    pointerEvents: "none",
+    zIndex: 2,
+    boxShadow: `inset 0 0 0 1px ${COMIC_INK}`,
+  },
+};
+
+// Caption box (cartouche) printed over the panel's top corner, half in /
+// half out - the landing's print language: flat fill, ink keyline, hard
+// offset shadow, zero radius. Decorative only: no pointer events, no
+// layout footprint (absolute over the frame).
+const CAPTION_FILLS = { cream: CREAM, orange: ORANGE };
+const captionBaseSx = {
+  position: "absolute",
+  top: -9,
+  zIndex: 3,
+  pointerEvents: "none",
+  userSelect: "none",
+  whiteSpace: "nowrap",
+  fontFamily: ANTON,
+  fontSize: "0.58rem",
+  letterSpacing: "0.09em",
+  textTransform: "uppercase",
+  lineHeight: 1,
+  padding: "3px 6px 2px",
+  color: COMIC_INK,
+  border: `2px solid ${COMIC_INK}`,
+  borderRadius: 0,
+  boxShadow: `2px 2px 0 ${COMIC_INK}`,
+};
+
+function HudPlate({ caption, captionSide = "left", captionFill = "cream", children, sx }) {
   return (
-    <ButtonBase
-      onClick={() => useGame.setState({ menuOpen: true })}
-      sx={{
-        position: "fixed",
-        top: "1.4rem",
-        left: "1.6rem",
-        zIndex: 10,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "0.45em",
-        border: "1px solid rgba(255, 255, 255, 0.16)",
-        background: "rgba(8, 8, 12, 0.55)",
-        color: "rgba(255, 255, 255, 0.75)",
-        font: "inherit",
-        fontSize: "0.8rem",
-        fontWeight: 600,
-        letterSpacing: "0.14em",
-        textTransform: "uppercase",
-        p: "0.6rem 1.15rem",
-        borderRadius: "999px",
-        transition: "color 0.15s ease, background 0.15s ease, border-color 0.15s ease",
-        "&:hover": {
-          color: "#fff",
-          borderColor: "rgba(255, 255, 255, 0.4)",
-          background: "rgba(255, 255, 255, 0.06)",
-        },
-        "&.Mui-focusVisible": {
-          outline: `2px solid ${ORANGE}`,
-          outlineOffset: 2,
-        },
-      }}
-    >
-      {"\u2190"} Back
-    </ButtonBase>
+    <Box sx={{ ...plateSx, ...sx }}>
+      <Box
+        sx={{
+          display: "inline-flex",
+          alignItems: "stretch",
+          height: "100%",
+          overflow: "hidden",
+        }}
+      >
+        {children}
+      </Box>
+      {caption ? (
+        <Box
+          aria-hidden
+          sx={{
+            ...captionBaseSx,
+            background: CAPTION_FILLS[captionFill],
+            ...(captionSide === "right" ? { right: -8 } : { left: -8 }),
+          }}
+        >
+          {caption}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
-// Active policy/mode readout, top-right: bright orange caption over a big
-// white monospace name.
-function ModeReadout() {
-  const modeLabel = useGame((s) => s.modeLabel);
-  const text = useScramble(modeLabel);
+function BackArrowIcon() {
   return (
     <Box
-      sx={{
-        position: "fixed",
-        top: "1.4rem",
-        right: "1.6rem",
-        zIndex: 10,
-        fontFamily: MONO,
-        pointerEvents: "none",
-        textAlign: "right",
-      }}
+      component="svg"
+      viewBox="0 0 24 24"
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.25}
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      sx={{ width: "0.95em", height: "0.95em", display: "block", flex: "none" }}
+    >
+      <path d="M20 12H6" />
+      <path d="M12 5l-7 7 7 7" />
+    </Box>
+  );
+}
+
+const hudHitSx = {
+  appearance: "none",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.45em",
+  height: "100%",
+  px: "0.95rem",
+  margin: 0,
+  border: "none",
+  borderRadius: 0,
+  background: "transparent",
+  color: CREAM,
+  cursor: "pointer",
+  fontFamily: ANTON,
+  fontSize: "0.92rem",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  textDecoration: "none",
+  lineHeight: 1,
+  whiteSpace: "nowrap",
+  WebkitTapHighlightColor: "transparent",
+  userSelect: "none",
+  transition: "background 0.15s ease, color 0.15s ease, filter 0.15s ease",
+  "&:focus-visible": {
+    outline: `2px dashed ${CREAM}`,
+    outlineOffset: -5,
+  },
+};
+
+function BackButton() {
+  return (
+    <HudPlate
+      caption="Nav"
+      sx={{ position: "fixed", top: "1.25rem", left: "1.5rem", zIndex: 10 }}
     >
       <Box
-        component="span"
+        component="button"
+        type="button"
+        onClick={() => useGame.setState({ menuOpen: true })}
         sx={{
-          display: "block",
-          mb: "0.35rem",
-          fontSize: "0.78rem",
-          fontWeight: 600,
-          letterSpacing: "0.24em",
-          textTransform: "uppercase",
-          color: ORANGE,
-          textShadow: "0 0 10px rgba(255, 122, 47, 0.35)",
+          ...hudHitSx,
+          "&:hover": {
+            color: ORANGE,
+            background: "rgba(255, 122, 47, 0.12)",
+          },
+          "&:active": { filter: "brightness(0.92)" },
         }}
       >
-        Mode
+        <BackArrowIcon /> Back
       </Box>
+    </HudPlate>
+  );
+}
+
+const SHOP_URL = "https://pollen-robotics.myshopify.com/products/microduck";
+
+function PreorderButton() {
+  const locoWant = useGame((s) => s.locoWant);
+  const text = useScramble(locoWant === "rollers" ? "Pre-order pack" : "Pre-order");
+  return (
+    <HudPlate
+      caption="Shop"
+      captionSide="right"
+      captionFill="orange"
+      sx={{ position: "fixed", top: "1.25rem", right: "1.5rem", zIndex: 10 }}
+    >
       <Box
+        component="a"
+        href={SHOP_URL}
+        target="_blank"
+        rel="noopener noreferrer"
         sx={{
-          minWidth: "8ch",
-          minHeight: "1.2em",
-          fontSize: "1.7rem",
-          fontWeight: 600,
-          letterSpacing: "0.16em",
-          textTransform: "uppercase",
-          color: "rgba(255, 255, 255, 0.95)",
-          textAlign: "right",
-          textShadow: "0 0 12px rgba(255, 255, 255, 0.28)",
-          lineHeight: 1.2,
+          ...hudHitSx,
+          background: ORANGE,
+          color: COMIC_INK,
+          "&:hover": { filter: "brightness(1.07)" },
+          "&:active": { filter: "brightness(0.92)" },
         }}
       >
         {text}
       </Box>
-    </Box>
+    </HudPlate>
   );
 }
 
-// In-game quick picks, bottom-left: colour dots + legs/rollers, live.
-// Same pill language as the vitrine DuckPlayground.
 function Quickbar() {
   const variant = useGame((s) => s.variant);
   const locoWant = useGame((s) => s.locoWant);
-  const pill = {
-    display: "inline-flex",
-    gap: "0.24rem",
-    p: "0.26rem",
-    border: "1px solid rgba(255, 255, 255, 0.14)",
-    borderRadius: "999px",
-    background: "rgba(8, 8, 12, 0.55)",
-  };
   return (
     <Box
       sx={{
         position: "fixed",
-        bottom: "1.4rem",
-        left: "1.6rem",
+        bottom: "1.25rem",
+        left: "1.5rem",
         zIndex: 10,
         display: "flex",
         flexWrap: "wrap",
-        alignItems: "center",
-        gap: "0.6rem",
+        alignItems: "flex-end",
+        gap: "0.85rem",
+        maxWidth: "calc(100vw - 14.5rem)",
       }}
     >
-      <Box role="group" aria-label="Duck colours" sx={pill}>
-        {Object.entries(VARIANT_SWATCHES).map(([name, hex]) => (
-          <ButtonBase
-            key={name}
-            aria-label={`${name} colours`}
-            aria-pressed={name === variant}
-            onClick={() => gameApi.setVariant?.(name)}
-            sx={{
-              height: { xs: "2rem", sm: "2.3rem" },
-              px: { xs: "0.42rem", sm: "0.5rem" },
-              borderRadius: "999px",
-              "&.Mui-focusVisible": { outline: `2px solid ${ORANGE}`, outlineOffset: 2 },
-              "&:hover .dot": { opacity: 1 },
-            }}
-          >
-            <Box
-              className="dot"
-              sx={{
-                width: { xs: "1.2rem", sm: "1.4rem" },
-                height: { xs: "1.2rem", sm: "1.4rem" },
-                borderRadius: "50%",
-                background: hex,
-                opacity: name === variant ? 1 : 0.45,
-                transform: name === variant ? "scale(1.15)" : "none",
-                transition: "transform 0.2s ease, opacity 0.2s ease",
-              }}
-            />
-          </ButtonBase>
-        ))}
-      </Box>
-      <Box role="group" aria-label="Locomotion mode" sx={pill}>
-        {["legs", "rollers"].map((name) => (
-          <ButtonBase
-            key={name}
-            aria-pressed={locoWant === name}
-            onClick={() => gameApi.requestLoco?.(name)}
-            sx={{
-              height: { xs: "2rem", sm: "2.3rem" },
-              px: { xs: "0.8rem", sm: "1.05rem" },
-              borderRadius: "999px",
-              font: "inherit",
-              fontSize: { xs: "0.68rem", sm: "0.76rem" },
-              fontWeight: 600,
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              color: locoWant === name ? ORANGE : "rgba(255, 255, 255, 0.45)",
-              background: locoWant === name ? "rgba(255, 122, 47, 0.14)" : "transparent",
-              transition: "color 0.2s ease, background 0.2s ease",
-              "&.Mui-focusVisible": { outline: `2px solid ${ORANGE}`, outlineOffset: 2 },
-            }}
-          >
-            {name === "legs" ? "Legs" : "Rollers"}
-          </ButtonBase>
-        ))}
-      </Box>
+      <HudPlate caption="Color">
+        <Box
+          role="group"
+          aria-label="Duck colours"
+          sx={{
+            display: "inline-flex",
+            alignItems: "stretch",
+            height: "100%",
+            gap: `${CELL_GAP}px`,
+          }}
+        >
+          {Object.entries(VARIANT_SWATCH_HEX).map(([name, hex]) => {
+            const selected = name === variant;
+            const label = VARIANT_LABELS[name] ?? name;
+            return (
+              <Box
+                key={name}
+                component="button"
+                type="button"
+                title={label}
+                aria-label={`${label} colours`}
+                aria-pressed={selected}
+                onClick={() => gameApi.setVariant?.(name)}
+                sx={{
+                  appearance: "none",
+                  width: CELL_H, // square cell inside frame + padding
+                  height: "100%",
+                  p: 0,
+                  background: hex,
+                  border: "none",
+                  borderRadius: 0,
+                  cursor: "pointer",
+                  WebkitTapHighlightColor: "transparent",
+                  boxShadow: selected ? `inset 0 0 0 2px ${CREAM}` : "none",
+                  opacity: selected ? 1 : 0.7,
+                  animation: selected ? `${chipPop} 0.28s ease` : "none",
+                  transition: "opacity 0.15s ease, box-shadow 0.15s ease",
+                  "&:hover": { opacity: 1 },
+                  "&:active": { animation: "none", filter: "brightness(0.92)" },
+                  "&:focus-visible": {
+                    outline: `2px dashed ${CREAM}`,
+                    outlineOffset: -5,
+                  },
+                  "@media (prefers-reduced-motion: reduce)": { animation: "none" },
+                }}
+              />
+            );
+          })}
+        </Box>
+      </HudPlate>
+      <HudPlate caption="Mode">
+        <Box
+          role="group"
+          aria-label="Locomotion mode"
+          sx={{
+            display: "inline-flex",
+            alignItems: "stretch",
+            height: "100%",
+            gap: `${CELL_GAP}px`,
+          }}
+        >
+          {[
+            { name: "legs", label: "Feet" },
+            { name: "rollers", label: "Rollers" },
+          ].map(({ name, label }) => {
+            const selected = locoWant === name;
+            return (
+              <Box
+                key={name}
+                component="button"
+                type="button"
+                aria-pressed={selected}
+                onClick={() => gameApi.requestLoco?.(name)}
+                sx={{
+                  ...hudHitSx,
+                  px: "1.05rem",
+                  background: selected ? ORANGE : "transparent",
+                  color: selected ? COMIC_INK : "rgba(250, 248, 242, 0.72)",
+                  "&:hover": {
+                    color: selected ? COMIC_INK : CREAM,
+                    background: selected ? ORANGE : "rgba(255, 122, 47, 0.12)",
+                  },
+                  "&:active": { filter: "brightness(0.92)" },
+                }}
+              >
+                {label}
+              </Box>
+            );
+          })}
+        </Box>
+      </HudPlate>
     </Box>
   );
 }
 
-// Telemetry stack, bottom-right: peers / speed + odometer / loop rates,
-// one line each, quietest at the bottom.
 function Telemetry() {
   const t = useGame((s) => s.telemetry);
   const odo = t.odo < 1000 ? `${t.odo.toFixed(1)}M` : `${(t.odo / 1000).toFixed(2)}KM`;
@@ -242,8 +385,8 @@ function Telemetry() {
     <Box
       sx={{
         position: "fixed",
-        bottom: "1.4rem",
-        right: "1.6rem",
+        bottom: "1.25rem",
+        right: "1.5rem",
         zIndex: 10,
         pointerEvents: "none",
         fontFamily: MONO,
@@ -263,7 +406,6 @@ function Telemetry() {
   );
 }
 
-// BIOS-style line while the roller variant streams in on first switch.
 function OsdLoad() {
   const rollersLoading = useGame((s) => s.rollersLoading);
   if (!rollersLoading) return null;
@@ -271,8 +413,8 @@ function OsdLoad() {
     <Box
       sx={{
         position: "fixed",
-        top: "6.1rem", // below the mode readout
-        right: "1.6rem",
+        top: "5.2rem",
+        right: "1.5rem",
         zIndex: 10,
         fontFamily: MONO,
         fontSize: "0.68rem",
@@ -296,17 +438,13 @@ export default function Hud() {
   const entered = useGame((s) => s.entered);
   const menuOpen = useGame((s) => s.menuOpen);
   const touchMode = useGame((s) => s.touchMode);
-  // HUD stays off until the first enter and while the title overlay is up
-  // (the BIOS readout simply covers it during boot, same as before).
   if (!entered || menuOpen) return null;
   return (
     <>
       <BackButton />
-      {/* Touch mode strips the HUD down to the thumbs: no quickbar, no
-          mode readout, no telemetry. Back stays to reach the menu. */}
+      <PreorderButton />
       {!touchMode && (
         <>
-          <ModeReadout />
           <Quickbar />
           <Telemetry />
           <OsdLoad />

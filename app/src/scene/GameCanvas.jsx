@@ -10,6 +10,7 @@ import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { bootGame } from "../game/game.js";
 import { gameApi } from "../store.js";
 import { SPAWN_X, SPAWN_Y } from "../game/constants.js";
+import CrtDistortion, { CRT_DISTORTION_ENABLED } from "./CrtDistortion.jsx";
 
 function Game() {
   const { scene, camera, gl } = useThree();
@@ -54,6 +55,7 @@ export default function GameCanvas() {
       }}
     >
       <Game />
+      {CRT_DISTORTION_ENABLED && <CrtDistortion />}
     </Canvas>
   );
 }

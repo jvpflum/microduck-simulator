@@ -14,8 +14,8 @@ const KEYMAP = {
 // One-shot keys -> controller actions. Physical Q/E (A/E on AZERTY) are the
 // explicit left / right kicks, mirroring the pad's LB / RB; F alternates.
 const ACTION_KEYS = {
-  KeyB: "spawnBall",
   KeyC: "chaseToggle",
+  KeyG: "groundPick",
   KeyM: "locoToggle",
   KeyR: "roll",
   KeyQ: "kickL",

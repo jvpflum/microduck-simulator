@@ -44,8 +44,20 @@ const hasMoved = (spawn, p) => {
   return Math.abs(Math.atan2(Math.sin(dyaw), Math.cos(dyaw))) > REVEAL_YAW;
 };
 
+// Instances not yet destroyed, so a dev-server hot swap of this module can
+// tear down the previous one's interval/room instead of stacking them.
+const liveInstances = new Set();
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    for (const g of [...liveInstances]) g.destroy();
+  });
+}
+
 export async function initGhosts(env) {
-  const noop = { update() {}, peerCount: () => 0, ghostCount: () => 0, debug: () => [], mapDots: () => [] };
+  const noop = {
+    update() {}, peerCount: () => 0, ghostCount: () => 0, debug: () => [],
+    mapDots: () => [], destroy() {}, injectState: () => false,
+  };
   let room;
   try {
     const { joinRoom } = await import(/* @vite-ignore */ TRYSTERO_URL);
@@ -56,6 +68,11 @@ export async function initGhosts(env) {
   }
 
   const { scene, cloneRig, setJoint, setJawOpen, applyVariant, jointNames, getLocalState } = env;
+  // Variant whitelist supplied by the host (this module imports nothing from
+  // variants.js, see header). Unknown names from remote peers are coerced to
+  // the default so applyVariant never sees a key it can't resolve.
+  const knownVariants = env.variantNames ? new Set(env.variantNames) : null;
+  const defaultVariant = env.defaultVariant ?? env.variantNames?.[0];
   // Locomotion-variant rig source: state.l 1 = rollers, 0/absent = legs
   // (old clients never send it). Falls back to the leg rig when the local
   // tab hasn't built the roller rig yet - known v1 limitation.
@@ -132,6 +149,7 @@ export async function initGhosts(env) {
   };
 
   const ghosts = new Map(); // peerId -> ghost
+  let destroyed = false; // set by destroy(): drops any late messages
   // Interpolation snapshot: the pose parts of a state message, stamped
   // with the local arrival time.
   const snapOf = (state) => ({ p: state.p, j: state.j, w: state.w ?? 0, at: performance.now() });
@@ -164,9 +182,33 @@ export async function initGhosts(env) {
     ghosts.delete(peerId);
   };
 
+  // The lobby is public over Nostr relays, so any peer can send anything:
+  // validate the payload shape before touching it, and never let a hostile
+  // or buggy message throw out of the handler.
+  const finiteArray = (a, n) => Array.isArray(a) && a.length === n && a.every(Number.isFinite);
+  const validState = (state) =>
+    typeof state === "object" && state !== null &&
+    finiteArray(state.p, 7) &&
+    finiteArray(state.j, jointNames.length) &&
+    (state.w == null || Number.isFinite(state.w)) &&
+    typeof state.v === "string";
+  const warnedPeers = new Set(); // one malformed-payload warn per peer
+
   // Handler signature in this build: (payload, context) where context is
   // { peerId } - NOT the bare peerId string of classic trystero.
-  act.onMessage = (state, { peerId }) => {
+  const handleState = (state, peerId) => {
+    if (destroyed) return;
+    if (!validState(state)) {
+      if (!warnedPeers.has(peerId)) {
+        warnedPeers.add(peerId);
+        console.warn("ghosts: dropping malformed state from peer", peerId);
+      }
+      return;
+    }
+    // Sanitize the free-form fields in place (state is a fresh deserialized
+    // object, never shared): unknown variant -> default, loco flag -> 0|1.
+    if (knownVariants && !knownVariants.has(state.v)) state.v = defaultVariant;
+    state.l = state.l ? 1 : 0;
     let g = ghosts.get(peerId);
     if (!g) {
       if (ghosts.size >= MAX_GHOSTS) return; // room stays open, rendering capped
@@ -193,7 +235,7 @@ export async function initGhosts(env) {
     // Peer switched legs <-> rollers: rebuild its ghost on the other rig
     // (cheap - cloneRig shares geometry). The snapshot buffer carries over
     // so the interpolated motion stays continuous across the swap.
-    if ((state.l ?? 0) !== g.loco) {
+    if (state.l !== g.loco) {
       const { lastSeen, spawn, revealed, buf } = g;
       removeGhost(peerId);
       g = makeGhost(state);
@@ -208,14 +250,28 @@ export async function initGhosts(env) {
       ghostify(g.rig);
     }
   };
+  const onState = (state, { peerId }) => {
+    try {
+      handleState(state, peerId);
+    } catch (e) {
+      // Shape-valid but still poisonous payload, or an internal error: drop
+      // the message, keep the handler alive for the next one.
+      if (!warnedPeers.has(peerId)) {
+        warnedPeers.add(peerId);
+        console.warn("ghosts: error handling state from peer", peerId, e);
+      }
+    }
+  };
+  act.onMessage = onState;
 
   // Same setter-style registration as onMessage.
   room.onPeerLeave = (peerId) => removeGhost(peerId);
 
   // Graceful exit so other tabs drop this ghost immediately...
-  window.addEventListener("pagehide", () => {
+  const onPagehide = () => {
     try { room.leave(); } catch {}
-  });
+  };
+  window.addEventListener("pagehide", onPagehide);
   // ...and a staleness sweep for peers that vanished without leaving
   // (crashed tab, dropped connection): 5 s without a state packet means
   // the peer is gone, not just lagging (even background-throttled tabs
@@ -224,7 +280,7 @@ export async function initGhosts(env) {
 
   // Broadcast + stale sweep on setInterval (not rAF) so both keep running
   // in occluded tabs.
-  setInterval(() => {
+  const tickId = setInterval(() => {
     const s = getLocalState();
     if (s) sendState(s);
     const now = performance.now();
@@ -237,8 +293,22 @@ export async function initGhosts(env) {
   // instances, cloned here from any node of the already-built local rig.
   const _qa = env.rig.placer.quaternion.clone();
   const _qb = env.rig.placer.quaternion.clone();
-  return {
+  const api = {
     room,
+    // Full teardown: without it, every HMR reload of this module stacked a
+    // live 15 Hz interval plus a ghost room that kept broadcasting.
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      liveInstances.delete(api);
+      clearInterval(tickId);
+      window.removeEventListener("pagehide", onPagehide);
+      try { room.leave(); } catch {}
+      for (const peerId of [...ghosts.keys()]) removeGhost(peerId);
+    },
+    // Debug/test hook: feed a payload through the exact same guarded path
+    // as a network message (console QA of the validation layer).
+    injectState: (state, peerId = "__debug") => onState(state, { peerId }),
     peerCount: () => Object.keys(room.getPeers()).length,
     ghostCount: () => ghosts.size,
     // Minimap feed: revealed ghosts' arena positions in raw MJCF coords
@@ -285,4 +355,6 @@ export async function initGhosts(env) {
       }
     },
   };
+  liveInstances.add(api);
+  return api;
 }
