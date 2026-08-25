@@ -29,12 +29,14 @@
 //               reference updated in place: getCommand() hands it out
 //               without copying, and the control loop reads it between
 //               render frames.
-//   axes        { jaw, orbitX, orbitY } - auxiliary continuous channels.
-//               jaw in [0, 1] (mouth opening), orbit axes in [-1, 1]
-//               (camera orbit rate; the inertia/smoothing lives downstream
-//               in the camera code, sources report raw deflection). Stable
-//               object reference, updated in place. Channels a source does
-//               not drive stay 0.
+//   axes        { jaw, orbitX, orbitY, ride } - auxiliary continuous
+//               channels. jaw in [0, 1] (mouth opening), orbit axes in
+//               [-1, 1] (camera orbit rate; the inertia/smoothing lives
+//               downstream in the camera code, sources report raw
+//               deflection), ride in [0, 1] (LT squeeze pressure, bends
+//               the wheee note's pitch). Stable object reference, updated
+//               in place. Channels a source does not drive may be omitted
+//               (merged as 0).
 //   pressed     Plain object of booleans (stable reference) mirroring which
 //               physical controls are currently down. HUD highlighting
 //               only - never game logic.
@@ -93,7 +95,7 @@ export class Controller {
   #sources = [];
   #listeners = new Map(); // action -> Set(cb)
   #locked = false;
-  #axes = { jaw: 0, orbitX: 0, orbitY: 0 };
+  #axes = { jaw: 0, orbitX: 0, orbitY: 0, ride: 0 };
 
   constructor({ sources = [] } = {}) {
     for (const s of sources) this.addSource(s);
@@ -125,17 +127,19 @@ export class Controller {
   // inside poll), then merge the aux axes.
   update(dt) {
     for (const s of this.#sources) s.poll?.(dt);
-    let jaw = 0, ox = 0, oy = 0;
+    let jaw = 0, ox = 0, oy = 0, ride = 0;
     for (const s of this.#sources) {
       const a = s.axes;
       if (!a) continue;
       jaw = Math.max(jaw, a.jaw ?? 0);
+      ride = Math.max(ride, a.ride ?? 0);
       if (Math.abs(a.orbitX ?? 0) > Math.abs(ox)) ox = a.orbitX;
       if (Math.abs(a.orbitY ?? 0) > Math.abs(oy)) oy = a.orbitY;
     }
     this.#axes.jaw = jaw;
     this.#axes.orbitX = ox;
     this.#axes.orbitY = oy;
+    this.#axes.ride = ride;
   }
 
   setLocked(v) {

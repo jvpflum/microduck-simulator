@@ -1192,13 +1192,33 @@ async function boot({ scene, camera, renderer }) {
     setJawOpen(rig, jawOpenNow());
   }
 
-  // ── Wheee: LT-held looping ride (runtime behavior) ────────────────────
-  // start → loop (repeated while the trigger is held) → end, from the same
-  // per-colourway voice bank as the chirps. Web Audio instead of <audio>:
-  // the loop segment is crossfade-authored to wrap sample-exactly and the
-  // start→loop handoff needs sample-accurate scheduling - HTMLAudio's loop
-  // is neither gap-free nor schedulable.
+  // ── Wheee: LT-held playable note (sim behavior) ───────────────────────
+  // The ride plays the voice bank's LOOP segment only (crossfade-authored
+  // to wrap sample-exactly), faded in over ~20 ms, and the LT analog
+  // pressure PICKS ITS NOTE: major-pentatonic steps over one octave via
+  // playbackRate, glided with setTargetAtTime so per-frame updates and
+  // step changes never zipper or click. The runtime has no pitch feature
+  // (raw PCM through aplay) - this is the sim's own instrument.
+  //
+  // The authored start segment is deliberately NOT played: it is 0.8-0.9 s
+  // long and cannot be pitch-modulated without breaking the sample-accurate
+  // start→loop handoff, so with it the first second of every squeeze was
+  // stuck at base pitch - pressure read as a volume change (the attack's
+  // own crescendo), not as notes.
+  //
+  // Release CUTS the ride and plays nothing else - the runtime kills the
+  // streaming aplay on the LT falling edge (its end segment never plays on
+  // the gamepad path), and the sim's old end-segment playback re-attacked
+  // a note on release, which read as a retriggered sound. A short gain
+  // ramp stands in for the process kill so Web Audio doesn't click. The
+  // gain is otherwise CONSTANT - pressure must never track loudness.
   const WHEEE_TAKES = "ab";
+  // Major pentatonic anchored one octave BELOW the sample's natural pitch:
+  // full squeeze reaches the natural note, casual play sits clearly lower
+  // (the natural pitch alone read as too shrill). -12 st = playbackRate 0.5.
+  const WHEEE_SCALE = [-12, -10, -8, -5, -3, 0]; // semitones vs natural pitch
+  const WHEEE_DEADZONE = 0.05; // squeeze below this is stick noise, maps to the root
+  const WHEEE_GAIN = 0.7;
   let wheeeCtx = null;
   const wheeeBufCache = new Map();
   let wheeeRide = null; // current ride, null while the trigger is up
@@ -1218,55 +1238,63 @@ async function boot({ scene, camera, renderer }) {
     if (wheeeCtx.state === "suspended") wheeeCtx.resume().catch(() => {});
     const bank = VOICE_BANK[currentVariant] ?? "duck1";
     const take = WHEEE_TAKES[(Math.random() * WHEEE_TAKES.length) | 0];
-    const ride = { bank, take, startSrc: null, loopSrc: null, gain: null };
+    const ride = { loopSrc: null, gain: null };
     wheeeRide = ride;
-    const seg = (name) =>
-      wheeeBuffer(signed(`./assets/voices/${bank}/wheee_${name}_${take}.wav`));
-    let startBuf, loopBuf;
+    let loopBuf;
     try {
-      // The end segment is fetched too so it's decoded by release time.
-      [startBuf, loopBuf] = await Promise.all([seg("start"), seg("loop"), seg("end")]);
+      loopBuf = await wheeeBuffer(signed(`./assets/voices/${bank}/wheee_loop_${take}.wav`));
     } catch {
       return; // asset missing / fetch failed: ride silently never starts
     }
     if (wheeeRide !== ride) return; // released (or replaced) during decode
     const gain = wheeeCtx.createGain();
-    gain.gain.value = 0.7;
     gain.connect(wheeeCtx.destination);
     const t0 = wheeeCtx.currentTime + 0.02;
-    const startSrc = wheeeCtx.createBufferSource();
-    startSrc.buffer = startBuf;
-    startSrc.connect(gain);
-    startSrc.start(t0);
+    // The loop is steady-state audio (no authored attack): a ~20 ms fade-in
+    // makes a clean note onset instead of a click. Constant gain after that.
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(WHEEE_GAIN, t0 + 0.02);
     const loopSrc = wheeeCtx.createBufferSource();
     loopSrc.buffer = loopBuf;
     loopSrc.loop = true;
     loopSrc.connect(gain);
-    loopSrc.start(t0 + startBuf.duration);
-    Object.assign(ride, { startSrc, loopSrc, gain });
+    loopSrc.start(t0);
+    Object.assign(ride, { loopSrc, gain });
   }
   function stopWheee({ silent = false } = {}) {
     const ride = wheeeRide;
     if (!ride) return;
     wheeeRide = null;
-    try { ride.startSrc?.stop(); } catch { /* already ended */ }
-    try { ride.loopSrc?.stop(); } catch { /* already ended */ }
-    ride.gain?.disconnect();
-    // No tail if nothing was heard (released mid-decode) or on replace.
-    if (silent || !ride.gain) return;
-    // The end segment has its own onset, playable from any loop point.
-    wheeeBuffer(signed(`./assets/voices/${ride.bank}/wheee_end_${ride.take}.wav`))
-      .then((buf) => {
-        const gain = wheeeCtx.createGain();
-        gain.gain.value = 0.7;
-        gain.connect(wheeeCtx.destination);
-        const src = wheeeCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(gain);
-        src.onended = () => gain.disconnect();
-        src.start();
-      })
-      .catch(() => {});
+    // Nothing audible yet (released mid-decode) or replaced by a re-press:
+    // hard stop is inaudible and frees the nodes immediately.
+    if (silent || !ride.gain) {
+      try { ride.loopSrc?.stop(); } catch { /* already ended */ }
+      ride.gain?.disconnect();
+      return;
+    }
+    // Release: cut the ride, retrigger nothing (runtime kills its player
+    // here). ~50 ms fade instead of a hard stop so the cut doesn't click.
+    const t = wheeeCtx.currentTime;
+    ride.gain.gain.setTargetAtTime(0, t, 0.05);
+    const stopAt = t + 0.3; // > 5 time constants: fully silent by then
+    try { ride.loopSrc?.stop(stopAt); } catch { /* already ended */ }
+    const gain = ride.gain;
+    setTimeout(() => gain.disconnect(), 400);
+  }
+
+  // Per-frame note picking: the full LT travel (above a small deadzone)
+  // spans the pentatonic scale, one octave below natural pitch at rest up
+  // to the natural pitch at full squeeze. Quantized to scale steps so
+  // squeezing plays NOTES, not a siren; the ~40 ms setTargetAtTime glide
+  // smooths both the per-frame updates and the step jumps (portamento
+  // instead of clicks). Digital 0/1 triggers simply play the top note
+  // (the natural pitch). Gain never tracks pressure.
+  function driveWheeePitch(pressure) {
+    const ride = wheeeRide;
+    if (!ride?.loopSrc) return;
+    const u = Math.min(1, Math.max(0, (pressure - WHEEE_DEADZONE) / (1 - WHEEE_DEADZONE)));
+    const semis = WHEEE_SCALE[Math.round(u * (WHEEE_SCALE.length - 1))];
+    ride.loopSrc.playbackRate.setTargetAtTime(2 ** (semis / 12), wheeeCtx.currentTime, 0.04);
   }
 
   // ── Telemetry (throttled into the store) ─────────────────────────────
@@ -1336,6 +1364,7 @@ async function boot({ scene, camera, renderer }) {
   function frame(dt) {
     controller.update(dt);
     padJaw = controller.getAxes().jaw;
+    driveWheeePitch(controller.getAxes().ride); // no-op while no ride is open
     if (padSource.connected !== padWasConnected) {
       padWasConnected = padSource.connected;
       setStore({ padConnected: padSource.connected });

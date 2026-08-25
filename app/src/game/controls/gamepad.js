@@ -19,15 +19,21 @@
 //   DpadDown     sit <-> stand
 //   DpadUp       short press = back to run; HOLD ~1 s = legs <-> rollers
 //                (like the robot's 3 s hold, shortened for the web)
-//   RT / LT      analog jaw (max of both); RT edge quacks through a
+//   RT           analog jaw + quack on the rising edge, through a
 //                Schmitt trigger (fire at >= 0.35, re-arm below 0.2 - a
 //                single threshold re-fires on jitter, which is how one
-//                squeeze used to quack several times). LT additionally
-//                rides the looping "wheee" (runtime behavior): start on
-//                the rising edge, stop the instant it releases - same
-//                Schmitt hysteresis so jitter can't restart the ride.
-//                The two are mutually exclusive: RT edges are ignored
-//                while the ride is open, LT edges while RT is engaged.
+//                squeeze used to quack several times).
+//   LT           rides the looping "wheee": start on the rising edge, cut
+//                the instant it releases - same Schmitt hysteresis so
+//                jitter can't restart the ride. The analog pressure is
+//                reported continuously in `axes.ride` so the game can
+//                pick the note with the squeeze (pentatonic steps over
+//                one octave - the trigger is a tiny instrument).
+//                The two are mutually exclusive: an edge on one trigger
+//                is CONSUMED while the other is physically down, so one
+//                squeeze can never fire both sounds - even on pads that
+//                mirror a combined trigger channel onto both button
+//                slots (see the trigger block for the tie-break).
 
 const PAD_DEADZONE = 0.15;
 const PAD_ALPHA = 0.12; // EMA smoothing toward the stick target
@@ -43,7 +49,7 @@ export class GamepadSource {
   id = "gamepad";
   connected = false;
   command = new Float32Array(3); // [vx, 0, wz], EMA-smoothed
-  axes = { jaw: 0, orbitX: 0, orbitY: 0 };
+  axes = { jaw: 0, orbitX: 0, orbitY: 0, ride: 0 };
   // Head-mode routing flag, owned by the game (mode state machine lives
   // there); while true the sticks fill `head` instead of command/orbit.
   headMode = false;
@@ -58,8 +64,8 @@ export class GamepadSource {
   #active = false; // owns twist authority (stick input, until EMA settles)
   #dpadUpAt = 0; // wall-clock of the current DpadUp press
   #dpadUpFired = false; // latch: one loco switch per hold
-  #rtArmed = true; // Schmitt trigger state for the RT quack
-  #ltDown = false; // LT physical Schmitt state (edge detection)
+  #rtDown = false; // RT physical Schmitt state (edge detection + gating)
+  #ltDown = false; // LT physical Schmitt state (edge detection + gating)
   #ltRide = false; // wheee ride currently open (LT edge that wasn't blocked)
 
   constructor({ getVelocityLimits }) {
@@ -75,7 +81,12 @@ export class GamepadSource {
 
   poll() {
     const prev = this.pressed;
-    const gp = [...(navigator.getGamepads?.() ?? [])].find((p) => p && p.connected);
+    // Prefer a standard-mapping pad: the button indices above are only
+    // guaranteed by the "standard" layout. A non-standard pad (mapping "")
+    // is a last-resort fallback - its indices are firmware-defined and
+    // some mirror one combined trigger channel onto both trigger slots.
+    const pads = [...(navigator.getGamepads?.() ?? [])].filter((p) => p && p.connected);
+    const gp = pads.find((p) => p.mapping === "standard") ?? pads[0];
     this.connected = !!gp;
     if (!gp) {
       if (this.#active) {
@@ -85,6 +96,7 @@ export class GamepadSource {
       }
       this.axes.orbitX = 0;
       this.axes.orbitY = 0;
+      this.axes.ride = 0;
       this.#zeroHead();
       // A pad yanked mid-ride must not leave the wheee looping forever.
       if (this.#ltRide) {
@@ -183,31 +195,42 @@ export class GamepadSource {
     }
     prev.dpadUp = dpadUp;
 
-    // Triggers drive the mouth (max of both, like the runtime). Physical
-    // Schmitt edges are detected first, then the actions are gated so the
-    // two triggers stay mutually exclusive: an RT edge squeezed while the
-    // wheee ride is open, or an LT edge while RT is engaged, is CONSUMED -
-    // releasing the blocker never retro-fires the suppressed action.
+    // Triggers. Both open the beak analogically - the duck sings the
+    // wheee with its mouth, wider with the squeeze (jaw is purely visual:
+    // no sound and no policy input ever reads it, so this can't re-open
+    // the cross-talk fixed below). Physical Schmitt edges are detected
+    // first - state must advance even for blocked edges, so releasing a
+    // blocker never retro-fires the suppressed action - then the actions
+    // are gated so the two triggers stay mutually exclusive.
     const rt = gp.buttons[BTN_RT]?.value ?? 0;
     const lt = gp.buttons[BTN_LT]?.value ?? 0;
     this.axes.jaw = Math.max(rt, lt);
-    const rtEdge = this.#rtArmed && rt >= 0.35;
-    if (rtEdge) this.#rtArmed = false;
-    else if (!this.#rtArmed && rt < 0.2) this.#rtArmed = true;
+    this.axes.ride = lt; // raw squeeze, consumed per-frame for the wheee pitch
+    const rtEdge = !this.#rtDown && rt >= 0.35;
+    if (rtEdge) this.#rtDown = true;
+    else if (this.#rtDown && rt < 0.2) this.#rtDown = false;
     const ltEdge = !this.#ltDown && lt >= 0.3;
     if (ltEdge) this.#ltDown = true;
     else if (this.#ltDown && lt < 0.2) this.#ltDown = false;
-    // RT quack, blocked while the wheee ride is open.
-    if (rtEdge && !this.#ltRide) this.onAction("quack");
-    // LT wheee ride: open on the rising edge (runtime threshold ~0.3)
-    // unless RT is engaged; cut the instant LT drops below the low rail.
-    if (ltEdge && this.#rtArmed) {
+    // LT wheee ride first: blocked only if RT was already down BEFORE
+    // this frame. On pads that mirror one combined trigger channel onto
+    // both button slots a squeeze raises rt and lt together; treating the
+    // same-frame rt rise as "engaged" would hand the race to the quack
+    // (the old bug: LT presses fired RT's sound). The LT edge wins the
+    // tie deterministically; cut the ride the instant LT drops below the
+    // low rail.
+    const rtWasDown = this.#rtDown && !rtEdge;
+    if (ltEdge && !rtWasDown) {
       this.#ltRide = true;
       this.onAction("wheeeStart");
     } else if (this.#ltRide && !this.#ltDown) {
       this.#ltRide = false;
       this.onAction("wheeeStop");
     }
+    // RT quack: consumed while LT is down or the ride is open. In the
+    // mirrored case above the lt rise opened the ride and set #ltDown in
+    // the same frame, so the phantom rt edge always lands here.
+    if (rtEdge && !this.#ltDown && !this.#ltRide) this.onAction("quack");
   }
 
   #zeroHead() {
