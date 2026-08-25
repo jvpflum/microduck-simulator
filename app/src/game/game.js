@@ -458,7 +458,61 @@ async function boot({ scene, camera, renderer }) {
     clearTimeout(standTimer); standTimer = null;
   }
 
+  // ── Mouse grab, physics side (MuJoCo-viewer-style perturbation) ───────
+  // While a grab is live, EVERY PHYSICS SUBSTEP writes a spring-damper
+  // force on the grabbed free body via xfrc_applied (world frame),
+  // pulling it toward the cursor target. Formula and gains mirror the
+  // native viewer's mjv_applyPerturbForce (engine_vis_interact.c):
+  //   F = -stiffness*mass*(pos - ref) - sqrt(stiffness)*mass*vel
+  // with stiffness = m->vis.map.stiffness default (100) and the damping
+  // coefficient sqrt(stiffness) exactly as MuJoCo computes it. Two
+  // deliberate departures: mass is the subtree mass instead of the
+  // Jacobian-derived localmass (equivalent for a free body pulled at its
+  // root, and the bindings expose no mj_jac), and the force acts
+  // torque-free at the freejoint origin instead of at the picked point
+  // (the viewer adds moment_arm x F; skipping it avoids spinning the duck
+  // the walking policy would then fight). The early per-CONTROL-step
+  // version of this (50 Hz zero-order hold, damping on 4-substep-stale
+  // velocity) was the jitter the user felt: a stiff spring held over 20 ms
+  // limit-cycles. Per-substep application is what the viewer does.
+  // Pointer wiring (raycast pick, target plane, cursor) lives after the
+  // camera section below; this block stays above resetSim so the control
+  // loop and resets can reference it during boot.
+  const GRAB_STIFFNESS = 100; // MuJoCo vis.map.stiffness default
+  const GRAB_DAMPING = Math.sqrt(GRAB_STIFFNESS); // viewer's damping coefficient
+  const GRAB_MAX_ACC = 200; // safety clamp only - the viewer has none
+  let grab = null; // { bodyId, qAdr, dofAdr, mass, target: [x,y,z] MJCF }
+  let endGrabHook = () => {}; // reassigned by the pointer wiring
+  function applyGrabForce() {
+    if (!grab) return;
+    const qpos = data.qpos, qvel = data.qvel;
+    let fx = GRAB_STIFFNESS * (grab.target[0] - qpos[grab.qAdr]) - GRAB_DAMPING * qvel[grab.dofAdr];
+    let fy = GRAB_STIFFNESS * (grab.target[1] - qpos[grab.qAdr + 1]) - GRAB_DAMPING * qvel[grab.dofAdr + 1];
+    let fz = GRAB_STIFFNESS * (grab.target[2] - qpos[grab.qAdr + 2]) - GRAB_DAMPING * qvel[grab.dofAdr + 2];
+    const n = Math.hypot(fx, fy, fz);
+    if (n > GRAB_MAX_ACC) {
+      const s = GRAB_MAX_ACC / n;
+      fx *= s; fy *= s; fz *= s;
+    }
+    // Fresh view each call: the WASM heap can grow and detach old ones.
+    const xfrc = data.xfrc_applied;
+    const a = grab.bodyId * 6;
+    xfrc[a] = grab.mass * fx;
+    xfrc[a + 1] = grab.mass * fy;
+    xfrc[a + 2] = grab.mass * fz;
+  }
+  function releaseGrabForce() {
+    if (!grab) return;
+    const xfrc = data.xfrc_applied;
+    const a = grab.bodyId * 6;
+    xfrc[a] = 0; xfrc[a + 1] = 0; xfrc[a + 2] = 0;
+    grab = null;
+  }
+
   function resetSim() {
+    // A live grab must not survive a reset: the per-step spring would
+    // immediately yank the respawned duck toward the stale cursor target.
+    endGrabHook();
     // Single reset path: Space, fall-kill, failed roll, loco switch.
     clearModeTimers();
     rollRun = null;
@@ -636,7 +690,10 @@ async function boot({ scene, camera, renderer }) {
       const ctrl = data.ctrl;
       for (let j = 0; j < NUM_JOINTS; j++) ctrl[j] = DEFAULT_POSE[j] + act[j] * ACTION_SCALE;
     }
-    for (let s = 0; s < DECIMATION; s++) mujoco.mj_step(model, data);
+    for (let s = 0; s < DECIMATION; s++) {
+      applyGrabForce(); // mouse perturbation, fresh velocity every substep
+      mujoco.mj_step(model, data);
+    }
 
     const death = poseIsDead();
     if (death === "exploded") {
@@ -1083,6 +1140,100 @@ async function boot({ scene, camera, renderer }) {
     camResetT0 = performance.now();
     chaseCam = true; // reset always re-attaches the chase cam
   }
+
+  // ── Mouse grab, pointer side (pick + drag target + cursor) ────────────
+  // Pointer-down on the duck (or the live ball) grabs it; anywhere else
+  // falls through to OrbitControls untouched. The pick is a three.js
+  // raycast against the render rig (the WASM bindings expose no
+  // mjv_select, and the rig IS the duck's collision-accurate silhouette
+  // for mouse purposes). While dragging, the cursor is projected on a
+  // camera-facing plane through the grab point - horizontal AND vertical
+  // drags both work, so the duck can be lifted - and the target is
+  // clamped inside the arena walls and to a sane height band. Desktop
+  // mouse only: the touch overlay keeps its own controls.
+  const GRAB_TARGET_ZMIN = 0.02, GRAB_TARGET_ZMAX = 0.45;
+  const _grabRaycaster = new THREE.Raycaster();
+  const _grabNdc = new THREE.Vector2();
+  const _grabPlane = new THREE.Plane();
+  const _grabHit = new THREE.Vector3();
+  const _grabCamDir = new THREE.Vector3();
+  function grabRayFrom(e) {
+    const r = renderer.domElement.getBoundingClientRect();
+    _grabNdc.set(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1,
+    );
+    _grabRaycaster.setFromCamera(_grabNdc, camera);
+  }
+  function grabPick() {
+    const duckHit = _grabRaycaster.intersectObject(rig.placer, true)[0];
+    const ballHit = ballActive ? _grabRaycaster.intersectObject(ballMesh, true)[0] : undefined;
+    if (duckHit && (!ballHit || duckHit.distance <= ballHit.distance)) {
+      return { kind: "duck", point: duckHit.point };
+    }
+    return ballHit ? { kind: "ball", point: ballHit.point } : null;
+  }
+  function updateGrabTarget() {
+    if (!_grabRaycaster.ray.intersectPlane(_grabPlane, _grabHit)) return;
+    const lim = ARENA_HALF - 0.05;
+    // three (x, y, z) -> MJCF (x, -z, y), Z-up.
+    grab.target[0] = Math.min(lim, Math.max(-lim, _grabHit.x));
+    grab.target[1] = Math.min(lim, Math.max(-lim, -_grabHit.z));
+    grab.target[2] = Math.min(GRAB_TARGET_ZMAX, Math.max(GRAB_TARGET_ZMIN, _grabHit.y));
+  }
+  function endGrab() {
+    if (!grab) return;
+    releaseGrabForce();
+    controls.enabled = true;
+    renderer.domElement.style.cursor = "";
+  }
+  endGrabHook = endGrab;
+  // Capture phase on window: runs before OrbitControls' pointerdown on the
+  // canvas, so the orbit can be disabled for the whole drag. The canvas's
+  // own chase-detach listener still fires afterward (grabbing detaches the
+  // chase cam exactly like an orbit drag does).
+  window.addEventListener("pointerdown", (e) => {
+    if (e.target !== renderer.domElement || e.pointerType !== "mouse" || e.button !== 0) return;
+    if (grab || inputLocked) return;
+    grabRayFrom(e);
+    const pick = grabPick();
+    if (!pick) return;
+    // Any duck mesh grabs the trunk: the freejoint root carries the whole
+    // body, and pulling the CoM is what the viewer perturbation feels like.
+    const g = pick.kind === "duck"
+      ? { bodyId: trunkId, qAdr: 0, dofAdr: 0, mass: model.body(trunkId).subtreemass }
+      : {
+          bodyId: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, "ball"),
+          qAdr: ballQposAdr, dofAdr: ballDofAdr,
+          mass: model.body(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, "ball")).mass,
+        };
+    camera.getWorldDirection(_grabCamDir);
+    _grabPlane.setFromNormalAndCoplanarPoint(_grabCamDir.negate(), pick.point);
+    grab = { ...g, target: [0, 0, 0] };
+    updateGrabTarget();
+    controls.enabled = false;
+    renderer.domElement.style.cursor = "grabbing";
+    try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* capture unsupported */ }
+  }, true);
+  let grabHoverAt = 0;
+  window.addEventListener("pointermove", (e) => {
+    if (grab) {
+      grabRayFrom(e);
+      updateGrabTarget();
+      return;
+    }
+    // Hover affordance: grab cursor over anything grabbable. Throttled -
+    // a full-rig raycast per mousemove event would be wasteful - and
+    // skipped mid-orbit (buttons held) so the cursor doesn't flicker.
+    if (e.target !== renderer.domElement || e.pointerType !== "mouse" || e.buttons || inputLocked) return;
+    const now = performance.now();
+    if (now - grabHoverAt < 80) return;
+    grabHoverAt = now;
+    grabRayFrom(e);
+    renderer.domElement.style.cursor = grabPick() ? "grab" : "";
+  });
+  window.addEventListener("pointerup", endGrab);
+  window.addEventListener("pointercancel", endGrab);
 
   // Pause: while the menu is up over a live game, keys belong to the menu.
   const setInputLock = (v) => { inputLocked = v; controller.setLocked(v); };
