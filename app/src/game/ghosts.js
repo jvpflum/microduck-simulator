@@ -15,16 +15,29 @@ const ROOM = "lobby";
 const MAX_GHOSTS = 3;
 const SEND_HZ = 15;
 const GHOST_OPACITY = 0.35;
-// Snapshot interpolation: each ghost renders INTERP_DELAY_MS in the past,
-// lerping between the two buffered snapshots that bracket the render time
-// (timed by local ARRIVAL, so no clock sync and no payload change - old
-// clients interoperate). This replaces the old exponential chase toward
-// the latest packet, whose move-then-stall rhythm read as micro-stutter.
-// The delay absorbs network jitter; past the newest snapshot the ghost
-// holds pose, so a background-throttled 1 Hz sender degrades into slow
-// discrete steps instead of teleports. Nobody synchronizes on ghosts, so
-// the added latency is invisible.
-const INTERP_DELAY_MS = 150;
+// Snapshot interpolation: each ghost renders in the past, lerping between
+// the two buffered snapshots that bracket the render time (timed by local
+// ARRIVAL, so no clock sync and no payload change - old clients
+// interoperate). This replaces the old exponential chase toward the
+// latest packet, whose move-then-stall rhythm read as micro-stutter.
+//
+// The playback delay is ADAPTIVE per ghost: it tracks the measured
+// snapshot arrival cadence (fast-attack / slow-release, like a jitter
+// buffer), so a healthy 15 Hz peer keeps the ~150 ms floor while a
+// background-throttled 1 Hz sender is replayed as continuous slow motion
+// ~1.3 s in the past instead of the old sprint-then-freeze (a fixed
+// 150 ms delay replayed each 1 s packet gap as a 150 ms dash). The delay
+// is slew-rate limited so rate changes (tab hidden <-> shown) glide -
+// render time never runs backward and never pops. Arrival stamps are
+// also de-jittered: bursts delivered back-to-back by the reliable
+// ordered channel (head-of-line blocking) are re-spaced to at least half
+// the nominal send interval, so a burst replays as motion instead of a
+// teleport. Nobody synchronizes on ghosts, so the latency is invisible.
+const INTERP_DELAY_MS = 150; // floor, ~2.25 send intervals at 15 Hz
+const INTERP_DELAY_MAX_MS = 2000; // cap for stalled senders
+const RESPACE_MIN_MS = 1000 / SEND_HZ / 2; // de-jitter floor between stamps
+const GAP_RELEASE = 0.15; // per-packet EWMA rate when arrivals speed up
+const DELAY_SLEW = 0.5; // max delay change per ms of real time
 const BUF_MAX = 40; // snapshots kept per ghost (~2.5 s at 15 Hz)
 // Idle visitors stay invisible: a ghost is only shown once its peer has
 // strayed from the pose of its first state message (everyone spawns at
@@ -151,8 +164,14 @@ export async function initGhosts(env) {
   const ghosts = new Map(); // peerId -> ghost
   let destroyed = false; // set by destroy(): drops any late messages
   // Interpolation snapshot: the pose parts of a state message, stamped
-  // with the local arrival time.
-  const snapOf = (state) => ({ p: state.p, j: state.j, w: state.w ?? 0, at: performance.now() });
+  // with the local arrival time, de-jittered: a snapshot never lands
+  // closer than RESPACE_MIN_MS after the previous one, so a burst of
+  // queued packets spreads into playable motion (the future-dated stamps
+  // stay behind the delayed render time).
+  const snapOf = (state, prevAt = -Infinity) => ({
+    p: state.p, j: state.j, w: state.w ?? 0,
+    at: Math.max(performance.now(), prevAt + RESPACE_MIN_MS),
+  });
   const makeGhost = (state) => {
     const rig = cloneRig(rigFor(state.l));
     applyVariant(rig, state.v);
@@ -165,6 +184,8 @@ export async function initGhosts(env) {
     return {
       rig, trunk, buf: [snapOf(state)],
       variant: state.v, loco: state.l ?? 0,
+      gapAvg: 1000 / SEND_HZ, // measured arrival cadence, ms
+      delay: INTERP_DELAY_MS, // current playback delay, ms
     };
   };
 
@@ -226,7 +247,16 @@ export async function initGhosts(env) {
       return;
     }
     g.lastSeen = performance.now();
-    g.buf.push(snapOf(state));
+    const prevAt = g.buf[g.buf.length - 1]?.at;
+    const snap = snapOf(state, prevAt);
+    if (prevAt !== undefined) {
+      // Arrival cadence, fast attack / slow release: one late packet bumps
+      // the estimate (and thus the playback delay) immediately, a resumed
+      // fast sender eases it back down over ~a second of packets.
+      const gap = snap.at - prevAt;
+      g.gapAvg = gap > g.gapAvg ? gap : g.gapAvg + (gap - g.gapAvg) * GAP_RELEASE;
+    }
+    g.buf.push(snap);
     if (g.buf.length > BUF_MAX) g.buf.shift();
     if (!g.revealed && hasMoved(g.spawn, state.p)) {
       g.revealed = true; // latched for the rest of this peer session
@@ -236,10 +266,10 @@ export async function initGhosts(env) {
     // (cheap - cloneRig shares geometry). The snapshot buffer carries over
     // so the interpolated motion stays continuous across the swap.
     if (state.l !== g.loco) {
-      const { lastSeen, spawn, revealed, buf } = g;
+      const { lastSeen, spawn, revealed, buf, gapAvg, delay } = g;
       removeGhost(peerId);
       g = makeGhost(state);
-      Object.assign(g, { lastSeen, spawn, revealed, buf });
+      Object.assign(g, { lastSeen, spawn, revealed, buf, gapAvg, delay });
       g.rig.placer.visible = revealed;
       ghosts.set(peerId, g);
       return;
@@ -278,21 +308,41 @@ export async function initGhosts(env) {
   // still send at ~1 Hz).
   const STALE_MS = 5000;
 
-  // Broadcast + stale sweep on setInterval (not rAF) so both keep running
-  // in occluded tabs.
-  const tickId = setInterval(() => {
+  // Broadcast + stale sweep on a Web Worker clock: hidden tabs clamp
+  // main-thread timers (and rAF) to >= 1 s, which used to degrade a hidden
+  // tab's ghost to 1 Hz stepping in everyone else's view. Dedicated-worker
+  // timers are exempt, and the postMessage task still runs on the hidden
+  // main thread (only timers are throttled), so a backgrounded tab keeps
+  // broadcasting at the nominal SEND_HZ. Inline via blob URL - no extra
+  // file, no bundler config; falls back to a plain (throttled) interval
+  // if workers or blob URLs are unavailable (strict CSP).
+  const tick = () => {
     const s = getLocalState();
     if (s) sendState(s);
     const now = performance.now();
     for (const [peerId, g] of [...ghosts]) {
       if (now - g.lastSeen > STALE_MS) removeGhost(peerId);
     }
-  }, 1000 / SEND_HZ);
+  };
+  let tickWorker = null;
+  let tickId = null;
+  try {
+    const url = URL.createObjectURL(new Blob(
+      [`setInterval(() => postMessage(0), ${1000 / SEND_HZ});`],
+      { type: "text/javascript" },
+    ));
+    tickWorker = new Worker(url);
+    URL.revokeObjectURL(url); // the worker resolved the URL synchronously
+    tickWorker.onmessage = tick;
+  } catch {
+    tickId = setInterval(tick, 1000 / SEND_HZ);
+  }
 
   // Scratch THREE.Quaternions without importing three: slerp needs real
   // instances, cloned here from any node of the already-built local rig.
   const _qa = env.rig.placer.quaternion.clone();
   const _qb = env.rig.placer.quaternion.clone();
+  let lastUpdateAt = performance.now(); // update() frame clock for the delay slew
   const api = {
     room,
     // Full teardown: without it, every HMR reload of this module stacked a
@@ -301,7 +351,8 @@ export async function initGhosts(env) {
       if (destroyed) return;
       destroyed = true;
       liveInstances.delete(api);
-      clearInterval(tickId);
+      tickWorker?.terminate();
+      if (tickId !== null) clearInterval(tickId);
       window.removeEventListener("pagehide", onPagehide);
       try { room.leave(); } catch {}
       for (const peerId of [...ghosts.keys()]) removeGhost(peerId);
@@ -325,11 +376,27 @@ export async function initGhosts(env) {
         meshes++; if (o.visible) visible++; op ??= o.material.opacity;
       });
       const w = g.trunk.getWorldPosition(g.trunk.position.clone());
-      return { p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant };
+      return { p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant, gapAvg: g.gapAvg, delay: g.delay, bufLen: g.buf.length };
     }),
     update() {
-      const renderT = performance.now() - INTERP_DELAY_MS;
+      const now = performance.now();
+      // Frame delta for the delay slew; capped so a long-occluded tab's
+      // first frame back just snaps the delay while nobody was watching.
+      const dt = Math.min(250, now - lastUpdateAt);
+      lastUpdateAt = now;
       for (const g of ghosts.values()) {
+        // Adaptive playback delay: track the measured arrival cadence with
+        // margin, floored at the healthy-peer delay. Slew-limited to half
+        // real time so render time never runs backward while the delay
+        // grows (slow-motion instead of reverse) and only gently
+        // fast-forwards (x1.5) while it shrinks back.
+        const target = Math.min(
+          INTERP_DELAY_MAX_MS,
+          Math.max(INTERP_DELAY_MS, g.gapAvg * 1.25 + 50),
+        );
+        const slew = dt * DELAY_SLEW;
+        g.delay += Math.min(slew, Math.max(-slew, target - g.delay));
+        const renderT = now - g.delay;
         const buf = g.buf;
         // Drop snapshots fully in the past; keep [0] and [1] bracketing
         // renderT (or the two newest, if renderT has caught up).
