@@ -231,7 +231,7 @@ function BackButton() {
   );
 }
 
-const SHOP_URL = "https://pollen-robotics.myshopify.com/products/microduck";
+const SHOP_URL = "https://store.pollen-robotics.com/collections/microduck";
 
 function PreorderButton() {
   const locoWant = useGame((s) => s.locoWant);
