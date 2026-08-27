@@ -29,6 +29,7 @@ const CHARCOAL_FACE = { color: [0.044, 0.044, 0.051], roughness: 0.5, metalness:
 const CHARCOAL_BODY = { color: [0.017, 0.017, 0.019], roughness: 0.5, metalness: 0.0 };   // #232326
 const LIGHT_WARM_GRAY = { color: [0.485, 0.459, 0.416], roughness: 0.35, metalness: 0.0 };// #b9b5ae
 const PURPLE_RING = { color: [0.114, 0.058, 0.578], roughness: 0.4, metalness: 0.0 };     // #6a52c8
+const SOFT_PURPLE = { color: [0.36, 0.23, 0.48], roughness: 0.45, metalness: 0.0 };       // #a489b5
 const PURPLE_FEET = { color: [0.164, 0.085, 0.584], roughness: 0.45, metalness: 0.0 };    // #7a5fc9
 const PALE_BLUE = { color: [0.441, 0.613, 0.723], roughness: 0.35, metalness: 0.0 };      // #b6cfdd
 const MEDIUM_BLUE = { color: [0.13, 0.321, 0.552], roughness: 0.35, metalness: 0.0 };     // #6f9ec4
@@ -42,16 +43,18 @@ const FEET_YELLOW = { color: [0.784, 0.455, 0.023], roughness: 0.5, metalness: 0
 // base), sideShells (left + right trunk shells), legShells (upper-leg
 // shells), feet (shoe upper: foot blocks + ankle brackets), soles (shoe
 // lower: sole pads), hips (hip covers), mechDark, mechGray.
-// The shoe is deliberately identical on all variants: yellow upper
-// (feet), orange lower (soles).
+// The mouth interior (upper gum = beakUpper, tongue) is amber on the
+// classic/blue pair and soft purple on the charcoal/purple pair (checked
+// against the real robots). Only the rigid jaw (beakLower) carries the
+// beak colour. Classic and blue wear orange shoes on clean yellow soles.
 export const VARIANTS = {
   // Front-center robot: warm gray head, cream body, amber eye, orange
-  // trim and beak.
+  // trim and beak, amber mouth interior, orange shoes on yellow soles.
   classic: {
     headDome: CREAM,
     facePlate: WARM_GRAY,
     trim: BRIGHT_ORANGE,
-    beakUpper: BRIGHT_ORANGE,
+    beakUpper: AMBER_YELLOW,
     beakLower: BRIGHT_ORANGE,
     tongue: AMBER_YELLOW,
     eyeRing: AMBER_YELLOW,
@@ -60,20 +63,20 @@ export const VARIANTS = {
     sideShells: CREAM,
     legShells: CREAM,
     feet: BRIGHT_ORANGE,
-    soles: AMBER_ORANGE,
+    soles: CLEAN_YELLOW,
     hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
   },
   // Front-left robot: charcoal shells, slightly lighter face plate,
-  // amber eye, orange/amber beak.
+  // amber eye, orange beak, soft purple mouth interior.
   charcoal: {
     headDome: CHARCOAL,
     facePlate: CHARCOAL_FACE,
     trim: BRIGHT_ORANGE,
-    beakUpper: BRIGHT_ORANGE,
+    beakUpper: SOFT_PURPLE,
     beakLower: BRIGHT_ORANGE,
-    tongue: AMBER_YELLOW,
+    tongue: SOFT_PURPLE,
     eyeRing: AMBER_YELLOW,
     lens: LENS,
     bodyShell: CHARCOAL_BODY,
@@ -86,14 +89,14 @@ export const VARIANTS = {
     mechGray: GRAY,
   },
   // Back-center robot: light warm gray head, purple eye, YELLOW trim and
-  // beak (both plates), cream body.
+  // rigid jaw, soft purple mouth interior, cream body.
   purple: {
     headDome: LIGHT_WARM_GRAY,
     facePlate: WARM_GRAY,
     trim: CLEAN_YELLOW,
-    beakUpper: CLEAN_YELLOW,
+    beakUpper: SOFT_PURPLE,
     beakLower: CLEAN_YELLOW,
-    tongue: AMBER_YELLOW,
+    tongue: SOFT_PURPLE,
     eyeRing: PURPLE_RING,
     lens: LENS,
     bodyShell: CREAM,
@@ -109,12 +112,13 @@ export const VARIANTS = {
     swatch: PURPLE_FEET,
   },
   // Right robot: pale blue dome over a medium blue face plate (two
-  // different blues), amber eye, orange/amber beak, blue-gray body.
+  // different blues), amber eye, orange beak, amber mouth interior,
+  // orange shoes on yellow soles, blue-gray body.
   blue: {
     headDome: PALE_BLUE,
     facePlate: MEDIUM_BLUE,
     trim: BRIGHT_ORANGE,
-    beakUpper: BRIGHT_ORANGE,
+    beakUpper: AMBER_YELLOW,
     beakLower: BRIGHT_ORANGE,
     tongue: AMBER_YELLOW,
     eyeRing: AMBER_YELLOW,
@@ -123,7 +127,7 @@ export const VARIANTS = {
     sideShells: PALE_BLUE,
     legShells: PALE_BLUE,
     feet: BRIGHT_ORANGE,
-    soles: AMBER_ORANGE,
+    soles: CLEAN_YELLOW,
     hips: MEDIUM_BLUE,
     mechDark: DARK,
     mechGray: GRAY,
@@ -197,17 +201,18 @@ export function meshMaterialsFor(v) {
     "rim.stl": v.soles,
     "tire.stl": v.mechDark,
     // Dark mechanics. leg.stl is the printed shin that wraps the ankle
-    // motor and its bearing ring: in gray they read as two gray motors,
-    // so both go dark with the motor they hold.
+    // motor and its bearing ring: gray on the real robots, standing
+    // apart from the black motor it holds.
     "xl330.stl": v.mechDark,
-    "leg.stl": v.mechDark,
+    "leg.stl": v.mechGray,
     "seeed_bearing__configuration_default.stl": v.mechDark,
     // Hip yaw mechanism (ribbed ring + 4-screw plate): reads as the hip
     // motor, so it goes dark too. The printed hip cover (hip_l.stl)
-    // keeps the dedicated `hips` slot.
+    // keeps the dedicated `hips` slot. The neck bracket is gray on the
+    // real robots, standing apart from the motors it carries.
     "yaw2roll.stl": v.mechDark,
     "bearing_roll.stl": v.mechDark,
-    "neck.stl": v.mechDark,
+    "neck.stl": v.mechGray,
     "np_f970.stl": v.mechDark,
     "pcb__raspberry_pi_zero_2_w.stl": v.mechDark,
     "elec_rpi_robot_hat_pcb.stl": v.mechDark,
