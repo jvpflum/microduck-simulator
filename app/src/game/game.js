@@ -1577,8 +1577,10 @@ async function boot({ scene, camera, renderer }) {
       kbKickFoot = kbKickFoot === "left" ? "right" : "left";
     }
   });
-  controller.on("sitToggle", () => {
-    if (loco !== "legs") return; // sitting is a legs-only skill
+  // Sit is the legs-only skill; on rollers the same button hands over to
+  // the crouch-glide, exactly as the (now unbound) roll action did.
+  controller.on("sitToggle", ({ source } = {}) => {
+    if (loco !== "legs") return triggerCrouch(srcTag(source));
     const sitting = mode === "sitstand" && sitFlag === 1;
     setMode(sitting ? "walk" : "sit");
   });

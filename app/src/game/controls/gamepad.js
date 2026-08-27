@@ -8,7 +8,8 @@
 //                camera code). R3 toggles the chase cam.
 //   A            ground pick: one-shot pick-up-from-the-ground cycle
 //                (runtime-faithful; game gates it to walk mode)
-//   X            roll (crouch-glide in roller mode - game decides)
+//   X            sit <-> stand (crouch-glide in roller mode - game decides).
+//                The pad can no longer launch a roll at all.
 //   Y            HEAD mode toggle (runtime-faithful). While the game sets
 //                `headMode`, locomotion is parked and BOTH sticks drive
 //                the head instead: left = head pitch/yaw, right = neck
@@ -164,7 +165,7 @@ export class GamepadSource {
     prev.a = a;
 
     const x = !!gp.buttons[BTN_X]?.pressed;
-    if (x && !prev.x) this.onAction("roll");
+    if (x && !prev.x) this.onAction("sitToggle");
     prev.x = x;
 
     const y = !!gp.buttons[BTN_Y]?.pressed;

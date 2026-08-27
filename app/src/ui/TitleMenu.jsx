@@ -53,7 +53,7 @@ const TILES = {
   kb: [
     { caps: "cluster-arrows", name: "Move", hint: "arrows or ZQSD" },
     { caps: ["A", "E"], name: "Kick", hint: "left / right" },
-    { caps: ["R"], name: "Roll", hint: "barrel roll" },
+    { caps: ["R"], name: "Sit", hint: "tap again to stand" },
     { caps: ["G"], name: "Pick up", hint: "beak to the ground" },
     { caps: ["C"], name: "Camera", hint: "toggle chase" },
     { caps: ["Space"], name: "Reset", hint: "fresh start" },
@@ -61,10 +61,9 @@ const TILES = {
   pad: [
     { caps: ["LS"], name: "Move", hint: "left stick" },
     { caps: ["LB", "RB"], name: "Kick", hint: "left / right" },
-    { caps: ["X"], name: "Roll", hint: "barrel roll" },
     { caps: ["Y"], name: "Head", hint: "sticks move the head" },
     { caps: ["RS"], name: "Camera", hint: "orbit" },
-    { caps: ["\u2193"], name: "Sit", hint: "tap again to stand" },
+    { caps: ["X", "\u2193"], name: "Sit", hint: "tap again to stand" },
   ],
   touch: [
     { caps: ["Stick"], name: "Move", hint: "left thumb" },
