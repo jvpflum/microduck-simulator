@@ -28,7 +28,11 @@ const CHARCOAL = { color: [0.028, 0.028, 0.033], roughness: 0.5, metalness: 0.0 
 const CHARCOAL_FACE = { color: [0.044, 0.044, 0.051], roughness: 0.5, metalness: 0.0 };   // #3c3c40
 const CHARCOAL_BODY = { color: [0.017, 0.017, 0.019], roughness: 0.5, metalness: 0.0 };   // #232326
 const LIGHT_WARM_GRAY = { color: [0.485, 0.459, 0.416], roughness: 0.35, metalness: 0.0 };// #b9b5ae
-const PURPLE_RING = { color: [0.114, 0.058, 0.578], roughness: 0.4, metalness: 0.0 };     // #6a52c8
+const PURPLE_RING = { color: [0.443, 0.308, 0.663], roughness: 0.4, metalness: 0.0 };     // #b098d0
+// Sole pads read a notch deeper than the eye ring on the real robots.
+const PURPLE_SOLE = { color: [0.221, 0.134, 0.465], roughness: 0.45, metalness: 0.0 };    // #8068b0
+// Lavender trunk / leg shells: a notch lighter than the eye ring.
+const LAVENDER_SHELL = { color: [0.462, 0.367, 0.688], roughness: 0.35, metalness: 0.0 };  // #b4a4d4
 const SOFT_PURPLE = { color: [0.36, 0.23, 0.48], roughness: 0.45, metalness: 0.0 };       // #a489b5
 const PURPLE_FEET = { color: [0.164, 0.085, 0.584], roughness: 0.45, metalness: 0.0 };    // #7a5fc9
 const PALE_BLUE = { color: [0.441, 0.613, 0.723], roughness: 0.35, metalness: 0.0 };      // #b6cfdd
@@ -68,30 +72,13 @@ export const VARIANTS = {
     mechDark: DARK,
     mechGray: GRAY,
   },
-  // Front-left robot: charcoal shells, slightly lighter face plate,
-  // amber eye, orange beak, soft purple mouth interior.
+  // Front-left robot: shares the purple colourway everywhere except its
+  // shells - warm gray face plate, yellow trim / rigid jaw / shoes, soft
+  // purple mouth interior, purple eye ring on purple soles. The head dome
+  // and the trunk / leg shells stay charcoal, which is what tells this
+  // variant apart from purple (and what the picker chip shows).
   charcoal: {
     headDome: CHARCOAL,
-    facePlate: CHARCOAL_FACE,
-    trim: BRIGHT_ORANGE,
-    beakUpper: SOFT_PURPLE,
-    beakLower: BRIGHT_ORANGE,
-    tongue: SOFT_PURPLE,
-    eyeRing: AMBER_YELLOW,
-    lens: LENS,
-    bodyShell: CHARCOAL_BODY,
-    sideShells: CHARCOAL_BODY,
-    legShells: CHARCOAL_BODY,
-    feet: BRIGHT_ORANGE,
-    soles: AMBER_ORANGE,
-    hips: GRAY,
-    mechDark: DARK,
-    mechGray: GRAY,
-  },
-  // Back-center robot: light warm gray head, purple eye, YELLOW trim and
-  // rigid jaw, soft purple mouth interior, cream body.
-  purple: {
-    headDome: LIGHT_WARM_GRAY,
     facePlate: WARM_GRAY,
     trim: CLEAN_YELLOW,
     beakUpper: SOFT_PURPLE,
@@ -99,24 +86,50 @@ export const VARIANTS = {
     tongue: SOFT_PURPLE,
     eyeRing: PURPLE_RING,
     lens: LENS,
-    bodyShell: CREAM,
-    sideShells: CREAM,
-    legShells: CREAM,
+    bodyShell: CHARCOAL_BODY,
+    sideShells: CHARCOAL_BODY,
+    legShells: CHARCOAL_BODY,
     feet: CLEAN_YELLOW,
-    soles: PURPLE_RING,
+    soles: PURPLE_SOLE,
     hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
-    // UI swatch override: the head is warm gray, but this colourway's
-    // identity is its purple accents - the picker dot shows that.
+  },
+  // Back-center robot: lavender head dome over a warm gray face plate,
+  // pale blue eye (the same blue the sky variant wears), YELLOW trim and
+  // rigid jaw, soft purple mouth interior, lavender trunk / leg shells
+  // on purple soles.
+  purple: {
+    headDome: LAVENDER_SHELL,
+    facePlate: WARM_GRAY,
+    trim: CLEAN_YELLOW,
+    beakUpper: SOFT_PURPLE,
+    beakLower: CLEAN_YELLOW,
+    tongue: SOFT_PURPLE,
+    eyeRing: PALE_BLUE,
+    lens: LENS,
+    bodyShell: LAVENDER_SHELL,
+    sideShells: LAVENDER_SHELL,
+    legShells: LAVENDER_SHELL,
+    feet: CLEAN_YELLOW,
+    soles: PURPLE_SOLE,
+    hips: GRAY,
+    mechDark: DARK,
+    mechGray: GRAY,
+    // UI swatch override: kept from when the head and body were gray/cream
+    // and only the accents carried the purple identity. The shells are
+    // lavender now, so this no longer diverges much - and nothing reads it
+    // anyway (the HUD picker uses VARIANT_SWATCH_HEX below).
     swatch: PURPLE_FEET,
   },
-  // Right robot: pale blue dome over a medium blue face plate (two
-  // different blues), amber eye, orange beak, amber mouth interior,
-  // orange shoes on yellow soles, blue-gray body.
+  // Right robot: shares the classic colourway everywhere except its
+  // shells - warm gray face plate, amber eye, orange beak, amber mouth
+  // interior, orange shoes on yellow soles, gray hips. The head dome and
+  // the trunk / leg shells stay pale blue, which is what tells this
+  // variant apart from classic (and what the picker chip shows).
   blue: {
     headDome: PALE_BLUE,
-    facePlate: MEDIUM_BLUE,
+    facePlate: WARM_GRAY,
     trim: BRIGHT_ORANGE,
     beakUpper: AMBER_YELLOW,
     beakLower: BRIGHT_ORANGE,
@@ -128,7 +141,7 @@ export const VARIANTS = {
     legShells: PALE_BLUE,
     feet: BRIGHT_ORANGE,
     soles: CLEAN_YELLOW,
-    hips: MEDIUM_BLUE,
+    hips: GRAY,
     mechDark: DARK,
     mechGray: GRAY,
   },
