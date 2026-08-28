@@ -31,8 +31,8 @@ policies are lazy-loaded on the first switch.
 | Crouch (rollers) | `BEST_roller_crouch.onnx` | One-shot crouch-glide: sinks low over ~3.5 s and stands back up (phase-encoded command) |
 
 Policies and MJCF model from
-[apirrone/microduck_runtime](https://github.com/apirrone/microduck_runtime)
-and [apirrone/mjlab_microduck](https://github.com/apirrone/mjlab_microduck).
+[pollen-robotics/microduck](https://github.com/pollen-robotics/microduck)
+and [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl).
 
 ## Controls
 
@@ -104,7 +104,7 @@ UI intents in).
   official `@mujoco/mujoco` WASM bindings.
 - Both variants share the exact same policy interface: 61D observation
   (gyro, projected gravity, 14 joint pos/vel, last action, 13D command)
-  and 14 position-targets, matching `mjlab_microduck/scripts/infer_policy.py`.
+  and 14 position-targets, matching [`microduck_rl/scripts/infer_policy.py`](https://github.com/pollen-robotics/microduck_rl/blob/main/scripts/infer_policy.py).
   The roller variant adds 4 passive wheel hinges that appear in `qpos`
   (zeroed in the keyframe) but not in the observation.
 - Rendering is a three.js rig built from `kinematics.json` /

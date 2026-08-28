@@ -1,5 +1,5 @@
 // Gamepad input source (see controller.js for the source interface
-// contract). Same mapping as the robot runtime (microduck_runtime):
+// contract). Same mapping as the robot runtime (pollen-robotics/microduck):
 //
 //   Left stick   vertical = vx (asymmetric fwd/back), horizontal = turn,
 //                EMA-smoothed like the runtime's cmd_alpha.

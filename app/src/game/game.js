@@ -3,10 +3,10 @@
 //
 // Physics runs in MuJoCo compiled to WebAssembly (the official
 // @mujoco/mujoco bindings), stepping the same MJCF the policies were
-// trained on (apirrone/mjlab_microduck). The controller is one of the
-// exported ONNX checkpoints from apirrone/microduck_runtime, executed with
+// trained on (pollen-robotics/microduck_rl). The controller is one of the
+// exported ONNX checkpoints from pollen-robotics/microduck, executed with
 // onnxruntime-web at 50 Hz (timestep 0.005 s, decimation 4) - exactly the
-// loop from mjlab_microduck/scripts/infer_policy.py.
+// loop from microduck_rl/scripts/infer_policy.py.
 //
 // Obs layout (61D, "new-cmd-obs" flavor, from the ONNX metadata):
 //   [base_ang_vel(3), projected_gravity(3), joint_pos(14), joint_vel(14),
