@@ -422,8 +422,8 @@ function Quickbar() {
           component="button"
           type="button"
           disabled={demoSaving}
-          title="Save the previous six seconds as a backflip training demonstration"
-          onClick={() => gameApi.saveDemonstration?.("backflip").catch((error) => {
+          title="Save the previous six seconds as a training clip"
+          onClick={() => gameApi.saveDemonstration?.("clip").catch((error) => {
             console.error("demonstration save failed", error);
           })}
           sx={{

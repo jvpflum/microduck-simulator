@@ -693,7 +693,7 @@ async function boot({ scene, camera, renderer }) {
     if (demoFrames.length > DEMO_MAX_FRAMES) demoFrames.shift();
   }
 
-  async function saveDemonstration(skill = "backflip") {
+  async function saveDemonstration(skill = "clip") {
     if (!CAPTURE_TOKEN) throw new Error("Open this model from Policy Bench to save demonstrations");
     if (demoFrames.length < 25) throw new Error("Record at least half a second first");
     setStore({ demoSaving: true, demoStatus: "Saving…" });
@@ -718,7 +718,7 @@ async function boot({ scene, camera, renderer }) {
       const result = await response.json();
       if (!response.ok || result.error) throw new Error(result.error || `Save failed (${response.status})`);
       setStore({ demoSaving: false, demoStatus: `Saved ${result.frames} frames` });
-      setTimeout(() => setStore({ demoStatus: "Save backflip" }), 5000);
+      setTimeout(() => setStore({ demoStatus: "Save clip" }), 5000);
       return result;
     } catch (error) {
       setStore({ demoSaving: false, demoStatus: "Save failed" });
