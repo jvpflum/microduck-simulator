@@ -29,7 +29,7 @@ import {
   POLICIES, JOINT_NAMES, DEFAULT_POSE, NUM_JOINTS, OBS_SIZE, CMD_SIZE,
   ACTION_SCALE, TIMESTEP, DECIMATION, CTRL_DT,
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
-  CROUCH_PERIOD_S, CROUCH_END_PHASE,
+  CROUCH_PERIOD_S, CROUCH_END_PHASE, PREVIEW_POLICY, PREVIEW_LOCO, PREVIEW_LABEL,
   GROUND_PICK_PERIOD_S, GROUND_PICK_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
   RELIEF_BUMPS, RELIEF_HMAX, RELIEF_GRID, RELIEF_SINK, RELIEF_RATE,
@@ -595,6 +595,18 @@ async function boot({ scene, camera, renderer }) {
     stickers?.pop("spawn");
   }
 
+  function toggleBall() {
+    if (!ball) return;
+    if (ballActive || ball.visual !== "hidden") {
+      ball.despawn({ cancelQueued: true, parkPhysics: parkBallPhysics });
+      ballActive = false;
+      syncButtons();
+      return;
+    }
+    spawnBall();
+    syncButtons();
+  }
+
   // ── Observation ─────────────────────────────────────────────────────
   const _q = new THREE.Quaternion();
   const _g = new THREE.Vector3();
@@ -977,6 +989,12 @@ async function boot({ scene, camera, renderer }) {
     locoReconciler ??= setInterval(reconcileLoco, 250);
   }
   useGame.subscribe((s) => s.locoWant, reconcileLoco);
+  if (PREVIEW_POLICY) {
+    // Preview links land in the matching hardware variant automatically;
+    // the reconciler patiently waits for the entrance input lock to clear.
+    setStore({ locoWant: PREVIEW_LOCO });
+    reconcileLoco();
+  }
 
   // ── Cutscenes (entrance + respawn) ──────────────────────────────────
   ceremony = createCeremony({
@@ -987,9 +1005,10 @@ async function boot({ scene, camera, renderer }) {
     setLocked: (v) => {
       inputLocked = v;
       controller.setLocked(v);
-      // A ball is always in play: pop one the moment the entrance or a
-      // respawn ceremony hands control back.
-      if (!v && ball && !ballActive) spawnBall({ fromQueue: true });
+      // Factory play keeps Pollen's ball-on-start behavior. Custom policy
+      // previews start with a clean floor for hops/flips; the HUD can add the
+      // ball explicitly at any time.
+      if (!v && !PREVIEW_POLICY && ball && !ballActive) spawnBall({ fromQueue: true });
     },
     flashReset: () => {},
   });
@@ -1569,7 +1588,13 @@ async function boot({ scene, camera, renderer }) {
   controller.on("chaseToggle", () => { chaseCam = !chaseCam; });
   controller.on("locoToggle", () => toggleLoco());
   controller.on("roll", ({ source }) => triggerRoll(srcTag(source)));
-  controller.on("groundPick", ({ source }) => triggerGroundPick(srcTag(source)));
+  controller.on("groundPick", ({ source }) => {
+    // Xbox A is the natural primary-action button.  On rollers it launches
+    // the configured one-shot policy (crouch normally, Roller Hop in a
+    // DuckLab preview); on feet it remains Pollen's ground-pick action.
+    if (loco !== "legs") return triggerCrouch(srcTag(source));
+    triggerGroundPick(srcTag(source));
+  });
   controller.on("kickL", ({ source }) => triggerKick("left", srcTag(source)));
   controller.on("kickR", ({ source }) => triggerKick("right", srcTag(source)));
   controller.on("alternateKick", ({ source }) => {
@@ -1721,7 +1746,7 @@ async function boot({ scene, camera, renderer }) {
     const label =
       recovery ? "Recovery"
       : mode === "roll" ? "Roll"
-      : mode === "crouch" ? "Crouch"
+      : mode === "crouch" ? (PREVIEW_LABEL || "Crouch")
       : mode === "groundpick" ? "Pick"
       : isKick() ? "Kick"
       : headMode ? "Head"
@@ -1748,6 +1773,7 @@ async function boot({ scene, camera, renderer }) {
     },
     resetSim,
     spawnBall: () => spawnBall(),
+    toggleBall,
     startEntrance: () => ceremony.startEntrance(),
   });
 

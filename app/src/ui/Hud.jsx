@@ -265,6 +265,7 @@ function PreorderButton() {
 function Quickbar() {
   const variant = useGame((s) => s.variant);
   const locoWant = useGame((s) => s.locoWant);
+  const ballActive = useGame((s) => s.ballActive);
   return (
     <Box
       sx={{
@@ -368,6 +369,25 @@ function Quickbar() {
               </Box>
             );
           })}
+        </Box>
+      </HudPlate>
+      <HudPlate caption="Arena">
+        <Box
+          component="button"
+          type="button"
+          aria-pressed={ballActive}
+          onClick={() => gameApi.toggleBall?.()}
+          sx={{
+            ...hudHitSx,
+            px: "1.05rem",
+            background: ballActive ? ORANGE : "transparent",
+            color: ballActive ? COMIC_INK : CREAM,
+            "&:hover": {
+              background: ballActive ? ORANGE : "rgba(255, 122, 47, 0.12)",
+            },
+          }}
+        >
+          {ballActive ? "Ball off" : "Ball on"}
         </Box>
       </HudPlate>
     </Box>

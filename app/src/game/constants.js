@@ -1,8 +1,25 @@
 // Shared sim constants, lifted verbatim from the pre-React rl.js.
 
 export const POLICY_DIR = "./policies";
+
+// DuckLab can open an immutable Policy Bench ONNX artifact directly in the
+// colorful browser arena.  The default Pollen policies remain untouched when
+// these query parameters are absent.
+const PREVIEW_PARAMS = new URLSearchParams(globalThis.location?.search ?? "");
+const previewNumber = (name, fallback, min, max) => {
+  const value = Number(PREVIEW_PARAMS.get(name));
+  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+};
+export const PREVIEW_POLICY = PREVIEW_PARAMS.get("preview_policy") || "";
+export const PREVIEW_SLOT = ["walk", "drive", "crouch"].includes(PREVIEW_PARAMS.get("preview_slot"))
+  ? PREVIEW_PARAMS.get("preview_slot")
+  : "";
+export const PREVIEW_LOCO = PREVIEW_PARAMS.get("preview_loco") === "rollers" ? "rollers" : "legs";
+export const PREVIEW_LABEL = (PREVIEW_PARAMS.get("preview_label") || "").slice(0, 32);
 export const POLICIES = {
-  walk: `${POLICY_DIR}/BEST_alpha_walking.onnx`,
+  walk: PREVIEW_POLICY && PREVIEW_SLOT === "walk"
+    ? PREVIEW_POLICY
+    : `${POLICY_DIR}/BEST_alpha_walking.onnx`,
   sitstand: `${POLICY_DIR}/BEST_alpha_sitstand.onnx`,
   roll: `${POLICY_DIR}/roulade.onnx`,
   // Blind one-shot kicks (the operator aims the robot, no ball in obs):
@@ -18,8 +35,12 @@ export const POLICIES = {
   // Roller variant (lazy-loaded on first switch, never at boot):
   // drive = velocity-tracking skating, crouch = one-shot crouch-glide
   // driven by a phase encoding in the command slots (ground-pick style).
-  drive: `${POLICY_DIR}/BEST_roller.onnx`,
-  crouch: `${POLICY_DIR}/BEST_roller_crouch.onnx`,
+  drive: PREVIEW_POLICY && PREVIEW_SLOT === "drive"
+    ? PREVIEW_POLICY
+    : `${POLICY_DIR}/BEST_roller.onnx`,
+  crouch: PREVIEW_POLICY && PREVIEW_SLOT === "crouch"
+    ? PREVIEW_POLICY
+    : `${POLICY_DIR}/BEST_roller_crouch.onnx`,
 };
 
 // From the ONNX metadata (identical for all alpha policies) and the STAND
@@ -55,8 +76,8 @@ export const RVEL_FWD = 0.6, RVEL_BACK = -0.5, RVEL_ANG = 0.3;
 // phase advancing at 1/CROUCH_PERIOD_S per second and the cycle exiting
 // at 0.7 - exactly the runtime's ground-pick slot the policy was trained
 // against (mjlab CROUCH_PERIOD = 5.0, cycle end 0.7 => 3.5 s gesture).
-export const CROUCH_PERIOD_S = 5.0;
-export const CROUCH_END_PHASE = 0.7;
+export const CROUCH_PERIOD_S = previewNumber("preview_period", 5.0, 0.25, 30.0);
+export const CROUCH_END_PHASE = previewNumber("preview_end", 0.7, 0.05, 1.0);
 // Ground-pick one-shot (legs): same phase encoding, from the runtime's
 // defaults (--ground-pick-period 4.0, cycle exiting at 0.7 => ~2.8 s
 // gesture, action scale and kP untouched at their 1.0 defaults).
