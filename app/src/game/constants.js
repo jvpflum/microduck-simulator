@@ -16,6 +16,9 @@ export const PREVIEW_SLOT = ["walk", "drive", "crouch"].includes(PREVIEW_PARAMS.
   : "";
 export const PREVIEW_LOCO = PREVIEW_PARAMS.get("preview_loco") === "rollers" ? "rollers" : "legs";
 export const PREVIEW_LABEL = (PREVIEW_PARAMS.get("preview_label") || "").slice(0, 32);
+// Short-lived local dashboard credential used only when the operator
+// explicitly saves a state/action demonstration from the arena.
+export const CAPTURE_TOKEN = PREVIEW_PARAMS.get("capture_token") || "";
 export const POLICIES = {
   walk: PREVIEW_POLICY && PREVIEW_SLOT === "walk"
     ? PREVIEW_POLICY

@@ -32,6 +32,8 @@ export const useGame = create(
     padConnected: false,
     touchMode: false,
     ballActive: false,
+    demoSaving: false,
+    demoStatus: "Save backflip",
     // Throttled telemetry block (4 Hz), bottom-right OSD
     telemetry: { fps: 0, ctrlHz: 0, speed: 0, odo: 0, peers: 0 },
   })),

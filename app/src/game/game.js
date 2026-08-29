@@ -30,6 +30,7 @@ import {
   ACTION_SCALE, TIMESTEP, DECIMATION, CTRL_DT,
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE, PREVIEW_POLICY, PREVIEW_LOCO, PREVIEW_LABEL,
+  CAPTURE_TOKEN,
   GROUND_PICK_PERIOD_S, GROUND_PICK_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
   RELIEF_BUMPS, RELIEF_HMAX, RELIEF_GRID, RELIEF_SINK, RELIEF_RATE,
@@ -407,8 +408,10 @@ async function boot({ scene, camera, renderer }) {
   const HEAD_SIGNS = new Float32Array([1, -1, 1, -1]);
   const headTarget = new Float32Array(4);
   const headSmooth = new Float32Array(4);
-  // Local-only kickable ball: false while parked at the keyframe spot
-  // (mesh hidden), true once popped in front of the duck.
+  // Keep the operator's arena preference separate from the transient visual
+  // state. A robot reset parks the ball during the respawn ceremony, but an
+  // explicit "Ball off" must remain off after the ceremony completes.
+  let ballEnabled = !PREVIEW_POLICY;
   let ballActive = false;
 
   // The twist the policy actually receives. Mid-roll every movement input
@@ -564,6 +567,7 @@ async function boot({ scene, camera, renderer }) {
   function spawnBall(opts = {}) {
     if (inputLocked && !opts.fromQueue) return;
     if (!ball) return;
+    ballEnabled = true;
     if (ball.visual !== "hidden") {
       ball.queueRespawn();
       ball.despawn({ parkPhysics: parkBallPhysics });
@@ -598,11 +602,13 @@ async function boot({ scene, camera, renderer }) {
   function toggleBall() {
     if (!ball) return;
     if (ballActive || ball.visual !== "hidden") {
+      ballEnabled = false;
       ball.despawn({ cancelQueued: true, parkPhysics: parkBallPhysics });
       ballActive = false;
       syncButtons();
       return;
     }
+    ballEnabled = true;
     spawnBall();
     syncButtons();
   }
@@ -668,6 +674,58 @@ async function boot({ scene, camera, renderer }) {
   // ── Control loop (50 Hz, async because ONNX inference is async) ──────
   let ctrlHz = 0;
 
+  // Rolling state history makes a successful manual motion recoverable after
+  // it lands. State + action trajectories can become an imitation reference;
+  // a screen recording alone cannot.
+  const DEMO_SECONDS = 6;
+  const DEMO_MAX_FRAMES = Math.ceil(DEMO_SECONDS / CTRL_DT);
+  const demoFrames = [];
+  function recordDemoFrame() {
+    demoFrames.push({
+      t: Number(data.time),
+      qpos: Array.from(data.qpos),
+      qvel: Array.from(data.qvel),
+      action: Array.from(lastAction),
+      command: Array.from(cmd),
+      mode,
+      loco,
+    });
+    if (demoFrames.length > DEMO_MAX_FRAMES) demoFrames.shift();
+  }
+
+  async function saveDemonstration(skill = "backflip") {
+    if (!CAPTURE_TOKEN) throw new Error("Open this model from Policy Bench to save demonstrations");
+    if (demoFrames.length < 25) throw new Error("Record at least half a second first");
+    setStore({ demoSaving: true, demoStatus: "Saving…" });
+    try {
+      const response = await fetch("/api/demonstrations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Policy-Bench-Token": CAPTURE_TOKEN,
+        },
+        body: JSON.stringify({
+          schema_version: 1,
+          skill,
+          source: "pollen-browser-arena",
+          captured_at: new Date().toISOString(),
+          control_hz: Math.round(1 / CTRL_DT),
+          preview_policy: PREVIEW_POLICY,
+          preview_label: PREVIEW_LABEL,
+          frames: demoFrames.slice(),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) throw new Error(result.error || `Save failed (${response.status})`);
+      setStore({ demoSaving: false, demoStatus: `Saved ${result.frames} frames` });
+      setTimeout(() => setStore({ demoStatus: "Save backflip" }), 5000);
+      return result;
+    } catch (error) {
+      setStore({ demoSaving: false, demoStatus: "Save failed" });
+      throw error;
+    }
+  }
+
   // Fresh projected-gravity z straight from the trunk pose (buildObs is
   // skipped during the fall-recovery settle, so obs[5] can go stale).
   function projGravZ() {
@@ -706,6 +764,7 @@ async function boot({ scene, camera, renderer }) {
       applyGrabForce(); // mouse perturbation, fresh velocity every substep
       mujoco.mj_step(model, data);
     }
+    recordDemoFrame();
 
     const death = poseIsDead();
     if (death === "exploded") {
@@ -1008,7 +1067,7 @@ async function boot({ scene, camera, renderer }) {
       // Factory play keeps Pollen's ball-on-start behavior. Custom policy
       // previews start with a clean floor for hops/flips; the HUD can add the
       // ball explicitly at any time.
-      if (!v && !PREVIEW_POLICY && ball && !ballActive) spawnBall({ fromQueue: true });
+      if (!v && ballEnabled && ball && !ballActive) spawnBall({ fromQueue: true });
     },
     flashReset: () => {},
   });
@@ -1774,6 +1833,7 @@ async function boot({ scene, camera, renderer }) {
     resetSim,
     spawnBall: () => spawnBall(),
     toggleBall,
+    saveDemonstration,
     startEntrance: () => ceremony.startEntrance(),
   });
 
@@ -1809,6 +1869,9 @@ async function boot({ scene, camera, renderer }) {
     get headMode() { return headMode; },
     toggleHeadMode, headTarget, headSmooth,
     get ballActive() { return ballActive; },
+    get ballEnabled() { return ballEnabled; },
+    get demoFrames() { return demoFrames; },
+    saveDemonstration,
     get ballQposAdr() { return ballQposAdr; },
     get chaseCam() { return chaseCam; },
     set chaseCam(v) { chaseCam = !!v; },

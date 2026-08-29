@@ -266,6 +266,8 @@ function Quickbar() {
   const variant = useGame((s) => s.variant);
   const locoWant = useGame((s) => s.locoWant);
   const ballActive = useGame((s) => s.ballActive);
+  const demoSaving = useGame((s) => s.demoSaving);
+  const demoStatus = useGame((s) => s.demoStatus);
   return (
     <Box
       sx={{
@@ -388,6 +390,26 @@ function Quickbar() {
           }}
         >
           {ballActive ? "Ball off" : "Ball on"}
+        </Box>
+      </HudPlate>
+      <HudPlate caption="Replay">
+        <Box
+          component="button"
+          type="button"
+          disabled={demoSaving}
+          title="Save the previous six seconds as a backflip training demonstration"
+          onClick={() => gameApi.saveDemonstration?.("backflip").catch((error) => {
+            console.error("demonstration save failed", error);
+          })}
+          sx={{
+            ...hudHitSx,
+            px: "1.05rem",
+            color: CREAM,
+            opacity: demoSaving ? 0.6 : 1,
+            "&:hover": { background: "rgba(129, 87, 255, 0.2)" },
+          }}
+        >
+          {demoStatus}
         </Box>
       </HudPlate>
     </Box>
