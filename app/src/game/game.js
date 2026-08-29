@@ -1833,6 +1833,7 @@ async function boot({ scene, camera, renderer }) {
     resetSim,
     spawnBall: () => spawnBall(),
     toggleBall,
+    triggerPreviewSkill: () => triggerCrouch("ui"),
     saveDemonstration,
     startEntrance: () => ceremony.startEntrance(),
   });

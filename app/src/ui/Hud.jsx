@@ -19,6 +19,7 @@ import Box from "@mui/material/Box";
 import { keyframes } from "@mui/material/styles";
 import { useGame, gameApi } from "../store.js";
 import { VARIANT_LABELS, VARIANT_SWATCH_HEX } from "../game/variants.js";
+import { PREVIEW_LABEL, PREVIEW_POLICY, PREVIEW_SLOT } from "../game/constants.js";
 import { ORANGE, MONO } from "../theme.js";
 import { ANTON, COMIC_INK, CREAM } from "./comic.jsx";
 
@@ -268,6 +269,8 @@ function Quickbar() {
   const ballActive = useGame((s) => s.ballActive);
   const demoSaving = useGame((s) => s.demoSaving);
   const demoStatus = useGame((s) => s.demoStatus);
+  const modeLabel = useGame((s) => s.modeLabel);
+  const previewSkill = PREVIEW_POLICY && PREVIEW_SLOT === "crouch";
   return (
     <Box
       sx={{
@@ -392,6 +395,28 @@ function Quickbar() {
           {ballActive ? "Ball off" : "Ball on"}
         </Box>
       </HudPlate>
+      {previewSkill && (
+        <HudPlate caption="Skill">
+          <Box
+            component="button"
+            type="button"
+            disabled={modeLabel === PREVIEW_LABEL}
+            title={`Trigger ${PREVIEW_LABEL || "the loaded skill"} (keyboard R or Xbox A)`}
+            onClick={() => gameApi.triggerPreviewSkill?.()}
+            sx={{
+              ...hudHitSx,
+              px: "1.05rem",
+              background: ORANGE,
+              color: COMIC_INK,
+              opacity: modeLabel === PREVIEW_LABEL ? 0.62 : 1,
+              "&:hover": { filter: "brightness(1.08)" },
+              "&:active": { filter: "brightness(0.92)" },
+            }}
+          >
+            {modeLabel === PREVIEW_LABEL ? `${PREVIEW_LABEL}…` : `Do ${PREVIEW_LABEL || "Skill"}`}
+          </Box>
+        </HudPlate>
+      )}
       <HudPlate caption="Replay">
         <Box
           component="button"
