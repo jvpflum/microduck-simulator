@@ -94,7 +94,10 @@ export const CTRL_DT = TIMESTEP * DECIMATION; // 50 Hz
 // official benchmark published by Pollen Robotics.
 export const ROLLER_CURRENT_LIMIT_A = 1.75;
 export const ROLLER_TORQUE_LIMIT_NM = 0.6405236195572268;
-export const ROLLER_WHEEL_FRICTIONLOSS = 0.003;
+// The normal Race5 arena uses 0.003.  A saved experimental policy can request
+// its own explicitly labelled physics profile through the dashboard URL; this
+// is for replaying discovery evidence, never for changing the default arena.
+export const ROLLER_WHEEL_FRICTIONLOSS = previewNumber("wheel_frictionloss", 0.003, 0.0, 0.02);
 export const RACE_EFFORT_COMMAND_MPS = 0.8;
 
 // Velocity command limits, same as infer_policy.py's keyboard mapping.
