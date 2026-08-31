@@ -19,7 +19,10 @@ import Box from "@mui/material/Box";
 import { keyframes } from "@mui/material/styles";
 import { useGame, gameApi } from "../store.js";
 import { VARIANT_LABELS, VARIANT_SWATCH_HEX } from "../game/variants.js";
-import { PREVIEW_LABEL, PREVIEW_POLICY, PREVIEW_SLOT } from "../game/constants.js";
+import {
+  PREVIEW_LABEL, PREVIEW_POLICY, PREVIEW_SLOT,
+  SPEED_TEST_MODE, SPEED_TEST_DISTANCE_FT, ROLLER_CURRENT_LIMIT_A,
+} from "../game/constants.js";
 import { ORANGE, MONO } from "../theme.js";
 import { ANTON, COMIC_INK, CREAM } from "./comic.jsx";
 
@@ -443,10 +446,26 @@ function Quickbar() {
 
 function Telemetry() {
   const t = useGame((s) => s.telemetry);
-  const odo = t.odo < 1000 ? `${t.odo.toFixed(1)}M` : `${(t.odo / 1000).toFixed(2)}KM`;
+  const MPS_TO_MPH = 2.2369362921;
+  const M_TO_FT = 3.280839895;
   const lines = [];
   if (t.peers) lines.push(`${t.peers + 1} ONLINE`);
-  lines.push(`${t.speed.toFixed(2)}M/S \u00b7 ODO ${odo}`);
+  lines.push(`${(t.speed * MPS_TO_MPH).toFixed(2)} MPH CURRENT`);
+  if (SPEED_TEST_MODE) {
+    lines.push(`${(t.maxSpeed * MPS_TO_MPH).toFixed(2)} MPH VERIFIED TOP · 0.5S`);
+    lines.push(`${(t.maxSpeedDistance * M_TO_FT).toFixed(1)} FT TO MAX`);
+    lines.push(
+      `${Math.min(SPEED_TEST_DISTANCE_FT, t.runDistance * M_TO_FT).toFixed(1)} / ` +
+      `${SPEED_TEST_DISTANCE_FT.toFixed(0)} FT${t.testComplete ? " · COMPLETE" : ""}`,
+    );
+    lines.push(`${(t.maxLateralDrift * M_TO_FT).toFixed(2)} FT MAX DRIFT`);
+    lines.push(`${t.maxHeadingErrorDeg.toFixed(1)}° MAX HEADING ERROR`);
+    lines.push(`${Math.min(100, t.steeringHelpPct).toFixed(0)}% STEERING HELP`);
+    lines.push(t.autoLineHold
+      ? `AUTO LINE HOLD · ${Math.min(100, t.autoSteeringPct).toFixed(0)}%`
+      : "RAW POLICY · LINE HOLD OFF");
+    lines.push(`DUCKLAB STANDARD SIM · ${ROLLER_CURRENT_LIMIT_A.toFixed(2)}A`);
+  }
   lines.push(`FPS ${t.fps} \u00b7 CTRL ${t.ctrlHz}HZ`);
   return (
     <Box

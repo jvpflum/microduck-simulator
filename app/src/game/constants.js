@@ -7,6 +7,7 @@ export const POLICY_DIR = "./policies";
 // these query parameters are absent.
 const PREVIEW_PARAMS = new URLSearchParams(globalThis.location?.search ?? "");
 const previewNumber = (name, fallback, min, max) => {
+  if (!PREVIEW_PARAMS.has(name)) return fallback;
   const value = Number(PREVIEW_PARAMS.get(name));
   return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 };
@@ -16,6 +17,23 @@ export const PREVIEW_SLOT = ["walk", "drive", "crouch"].includes(PREVIEW_PARAMS.
   : "";
 export const PREVIEW_LOCO = PREVIEW_PARAMS.get("preview_loco") === "rollers" ? "rollers" : "legs";
 export const PREVIEW_LABEL = (PREVIEW_PARAMS.get("preview_label") || "").slice(0, 32);
+export const SPEED_TEST_MODE = PREVIEW_PARAMS.get("speed_test") === "1";
+export const SPEED_TEST_DISTANCE_FT = previewNumber("speed_test_distance_ft", 100, 10, 300);
+export const SPEED_TEST_DISTANCE_M = SPEED_TEST_DISTANCE_FT * 0.3048;
+// A race policy receives yaw-rate command but has no absolute course heading
+// or lateral-position observation.  The line controller closes that missing
+// outer loop, just as the operator currently does by holding left.  It is on
+// for speed-test previews, explicitly measurable, and can be disabled with
+// `auto_line=0` for raw-policy comparison.
+export const AUTO_LINE_HOLD = SPEED_TEST_MODE && PREVIEW_PARAMS.get("auto_line") !== "0";
+export const LINE_HOLD_YAW_KP = previewNumber("line_yaw_kp", 0.55, 0.0, 3.0);
+export const LINE_HOLD_LATERAL_KP = previewNumber("line_lateral_kp", 0.10, 0.0, 1.0);
+export const LINE_HOLD_YAW_KD = previewNumber("line_yaw_kd", 0.08, 0.0, 1.0);
+export const LINE_HOLD_MAX_WZ = previewNumber("line_max_wz", 0.18, 0.01, 0.30);
+// A fixed roller asymmetry can require a small corrective turn while the gait
+// first loads.  This deliberately fades over the first metres; it is surfaced
+// in the speed-test URL rather than pretending the raw policy is symmetric.
+export const LINE_LAUNCH_BIAS_WZ = previewNumber("line_launch_bias_wz", -0.06, -0.30, 0.30);
 // Short-lived local dashboard credential used only when the operator
 // explicitly saves a state/action demonstration from the arena.
 export const CAPTURE_TOKEN = PREVIEW_PARAMS.get("capture_token") ||
@@ -68,6 +86,17 @@ export const TIMESTEP = 0.005;
 export const DECIMATION = 4;
 export const CTRL_DT = TIMESTEP * DECIMATION; // 50 Hz
 
+// DuckLab standardized race physics. The headless scorer derives the torque cap
+// from the XL330 M6 model at 1.75 A (kt=0.36601349688984386 N.m/A) and applies
+// the same bearing drag to all four passive wheels. Keep the browser preview
+// on these exact values so an arena mph result is comparable to Policy Bench.
+// This is a documented DuckLab benchmark profile, not an endorsement or an
+// official benchmark published by Pollen Robotics.
+export const ROLLER_CURRENT_LIMIT_A = 1.75;
+export const ROLLER_TORQUE_LIMIT_NM = 0.6405236195572268;
+export const ROLLER_WHEEL_FRICTIONLOSS = 0.003;
+export const RACE_EFFORT_COMMAND_MPS = 0.8;
+
 // Velocity command limits, same as infer_policy.py's keyboard mapping.
 // No strafe input anymore: the lateral cmd slot stays zeroed for the obs.
 export const VEL_FWD = 0.25, VEL_BACK = -0.2, VEL_ANG = 1.0;
@@ -92,12 +121,16 @@ export const GROUND_PICK_END_PHASE = 0.7;
 export const BALL_RADIUS = 0.05;
 export const BALL_PARK_POS = "50 0 0.05";
 
-// Square arena boxing the play area: static walls at +-ARENA_HALF keep
-// the ball (and the duck) inside. Tall enough that neither steps over.
-export const ARENA_HALF = 1.5; // inner half-size, m
+// Policy previews open as a long, flat straight-line speed test. The spawn is
+// at -0.4 * ARENA_HALF and the forward wall at +ARENA_HALF, so 0.9x the test
+// length yields roughly 25% extra runway after the measured finish.
+// Ordinary factory play keeps the original compact room.
+export const ARENA_HALF = SPEED_TEST_MODE
+  ? Math.max(15.24, SPEED_TEST_DISTANCE_M * 0.9)
+  : 1.5;
 export const ARENA_WALL_H = 0.25;
 export const ARENA_WALL_T = 0.05;
-// Section grid: 5 cells across the 3 m arena (ODD, so a true middle
+// Section grid: 5 cells across the arena (ODD, so a true middle
 // column/row of cells exists; the lattice is shifted half a cell in the
 // shaders so the walls land exactly on section lines).
 export const GRID_SECTION = (2 * ARENA_HALF) / 5; // 0.6 m
@@ -135,8 +168,7 @@ export const RELIEF_RATE = 0.6; // raise/sink rate, scale units per second
 
 // Spawn: center of the middle section cell in the SECOND ROW FROM THE
 // BACK wall. The duck faces +X (identity freejoint quat, walks toward
-// local +X), so "back" is the -X wall: row centers sit at x = -1.2,
-// -0.6, 0, 0.6, 1.2 -> second row is -0.6; middle column is y = 0.
+// local +X); the second of five cells leaves a long straight runway.
 // MJCF coordinates (three.js: x -> x, y -> -z).
 export const SPAWN_X = -ARENA_HALF + 1.5 * GRID_SECTION; // -0.6
 export const SPAWN_Y = 0;

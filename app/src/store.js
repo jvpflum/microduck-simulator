@@ -35,7 +35,14 @@ export const useGame = create(
     demoSaving: false,
     demoStatus: "Save clip",
     // Throttled telemetry block (4 Hz), bottom-right OSD
-    telemetry: { fps: 0, ctrlHz: 0, speed: 0, odo: 0, peers: 0 },
+    telemetry: {
+      fps: 0, ctrlHz: 0, speed: 0, maxSpeed: 0, odo: 0,
+      runDistance: 0, testDistance: 0, testComplete: false,
+      maxSpeedDistance: 0, lateralDrift: 0, maxLateralDrift: 0,
+      headingErrorDeg: 0, maxHeadingErrorDeg: 0, steeringHelpPct: 0,
+      autoLineHold: false, autoSteeringPct: 0,
+      peers: 0,
+    },
   })),
 );
 

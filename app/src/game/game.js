@@ -28,8 +28,12 @@ import { signed } from "./signed.js";
 import {
   POLICIES, JOINT_NAMES, DEFAULT_POSE, NUM_JOINTS, OBS_SIZE, CMD_SIZE,
   ACTION_SCALE, TIMESTEP, DECIMATION, CTRL_DT,
+  ROLLER_TORQUE_LIMIT_NM, ROLLER_WHEEL_FRICTIONLOSS, RACE_EFFORT_COMMAND_MPS,
   VEL_FWD, VEL_BACK, VEL_ANG, RVEL_FWD, RVEL_BACK, RVEL_ANG,
   CROUCH_PERIOD_S, CROUCH_END_PHASE, PREVIEW_POLICY, PREVIEW_LOCO, PREVIEW_LABEL,
+  SPEED_TEST_MODE, SPEED_TEST_DISTANCE_M, AUTO_LINE_HOLD,
+  LINE_HOLD_YAW_KP, LINE_HOLD_LATERAL_KP, LINE_HOLD_YAW_KD, LINE_HOLD_MAX_WZ,
+  LINE_LAUNCH_BIAS_WZ,
   CAPTURE_TOKEN,
   GROUND_PICK_PERIOD_S, GROUND_PICK_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
@@ -160,6 +164,19 @@ async function boot({ scene, camera, renderer }) {
       for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
       return e;
     };
+    if (xmlFile === "robot_allcollisions_rollers.xml") {
+      // Match tools/evaluate_swizzle.py. Without these two overrides the
+      // browser is a materially easier vehicle and overstates race speed.
+      for (const actuator of doc.querySelectorAll("actuator > position")) {
+        actuator.setAttribute(
+          "forcerange",
+          `${-ROLLER_TORQUE_LIMIT_NM} ${ROLLER_TORQUE_LIMIT_NM}`,
+        );
+      }
+      for (const joint of doc.querySelectorAll('joint[name^="passive_"][name$="wheel"]')) {
+        joint.setAttribute("frictionloss", String(ROLLER_WHEEL_FRICTIONLOSS));
+      }
+    }
     root.appendChild(el("option", { timestep: String(TIMESTEP) }));
     doc.querySelector("worldbody").appendChild(
       el("geom", { name: "floor", type: "plane", size: "0 0 0.05", pos: "0 0 0" }),
@@ -365,12 +382,13 @@ async function boot({ scene, camera, renderer }) {
   const locos = {};
   let loco = "legs"; // "legs" | "rollers"
   const velLims = () => (loco === "rollers"
-    ? [RVEL_FWD, RVEL_BACK, RVEL_ANG]
+    ? [SPEED_TEST_MODE ? RACE_EFFORT_COMMAND_MPS : RVEL_FWD, RVEL_BACK, RVEL_ANG]
     : [VEL_FWD, VEL_BACK, VEL_ANG]);
 
   const lastAction = new Float32Array(NUM_JOINTS);
   const obs = new Float32Array(OBS_SIZE);
   const cmd = new Float32Array(CMD_SIZE); // [vx, vy, wz, head(4), body(6)]
+  let autoLineCommand = 0;
   // Input controller: keyboard + gamepad + touch sources merged into one
   // continuous command + discrete action surface, in priority order.
   const kbSource = new KeyboardSource({ getVelocityLimits: () => velLims() });
@@ -646,6 +664,25 @@ async function boot({ scene, camera, renderer }) {
     } else {
       const c = effectiveCmd();
       cmd[0] = c[0]; cmd[1] = c[1]; cmd[2] = c[2];
+      autoLineCommand = 0;
+      if (AUTO_LINE_HOLD && loco === "rollers" && c[0] > 0.05 &&
+          speedTestStartYaw !== null && speedTestStartY !== null) {
+        const yawError = wrapPi(trunkYaw() - speedTestStartYaw);
+        const lateralError = data.qpos[1] - speedTestStartY;
+        const yawRate = data.qvel[5];
+        const launchDistance = Math.max(0, data.qpos[0] - speedTestStartX);
+        const launchTrim = LINE_LAUNCH_BIAS_WZ * Math.max(0, 1 - launchDistance / 1.5);
+        autoLineCommand = Math.max(-LINE_HOLD_MAX_WZ, Math.min(
+          LINE_HOLD_MAX_WZ,
+          launchTrim
+            - LINE_HOLD_YAW_KP * yawError
+            - LINE_HOLD_LATERAL_KP * lateralError
+            - LINE_HOLD_YAW_KD * yawRate,
+        ));
+        // Manual steering remains available as a trim/override, while the
+        // telemetry separately reports the automatic share.
+        cmd[2] = Math.max(-RVEL_ANG, Math.min(RVEL_ANG, c[2] + autoLineCommand));
+      }
     }
     // Head slots cmd[3..6]: EMA toward the stick targets at 50 Hz (this
     // runs once per control step), exactly the runtime's smoothing. Kept
@@ -1534,24 +1571,108 @@ async function boot({ scene, camera, renderer }) {
   let fpsLastT = performance.now();
   let odoM = 0;
   let odoX = null, odoY = null;
+  let speedTestStartX = null;
+  let speedTestStartY = null;
+  let speedTestStartYaw = null;
+  let speedTestMaxMps = 0;
+  let speedTestMaxDistance = 0;
+  let speedTestMaxLateral = 0;
+  let speedTestMaxHeading = 0;
+  let speedTestSpeedWindow = [];
+  let speedTestSteeringIntegral = 0;
+  let speedTestAutoSteeringIntegral = 0;
+  let speedTestElapsed = 0;
+  let speedTestComplete = false;
   let telemetryLastPush = 0;
+  const trunkYaw = () => {
+    const qw = data.qpos[3], qx = data.qpos[4];
+    const qy = data.qpos[5], qz = data.qpos[6];
+    return Math.atan2(
+      2 * (qw * qz + qx * qy),
+      1 - 2 * (qy * qy + qz * qz),
+    );
+  };
+  function resetSpeedTest() {
+    speedTestStartX = data.qpos[0];
+    speedTestStartY = data.qpos[1];
+    speedTestStartYaw = trunkYaw();
+    speedTestMaxMps = 0;
+    speedTestMaxDistance = 0;
+    speedTestMaxLateral = 0;
+    speedTestMaxHeading = 0;
+    speedTestSpeedWindow = [];
+    speedTestSteeringIntegral = 0;
+    speedTestAutoSteeringIntegral = 0;
+    speedTestElapsed = 0;
+    speedTestComplete = false;
+  }
   function renderTelemetry() {
     const now = performance.now();
     const dtF = (now - fpsLastT) / 1000;
     fpsLastT = now;
     if (dtF > 0 && dtF < 0.5) fpsEma += (1 / dtF - fpsEma) * 0.05;
     const stepD = (odoX === null) ? 0 : Math.hypot(data.qpos[0] - odoX, data.qpos[1] - odoY);
-    if (stepD < 0.05) odoM += stepD; // plausible per-frame travel only
+    if (stepD < 0.05) {
+      odoM += stepD; // plausible per-frame travel only
+    } else {
+      // A reset/teleport begins a fresh measured speed attempt.
+      resetSpeedTest();
+    }
     odoX = data.qpos[0];
     odoY = data.qpos[1];
+    if (speedTestStartX === null) resetSpeedTest();
+    const runDistance = Math.max(0, data.qpos[0] - speedTestStartX);
+    const speed = Math.hypot(data.qvel[0], data.qvel[1]);
+    const lateralDrift = Math.abs(data.qpos[1] - speedTestStartY);
+    const headingError = Math.abs(wrapPi(trunkYaw() - speedTestStartYaw));
+    if (!speedTestComplete) {
+      speedTestSpeedWindow.push({ t: Number(data.time), speed });
+      const cutoff = Number(data.time) - 0.5;
+      while (speedTestSpeedWindow.length > 1 && speedTestSpeedWindow[0].t < cutoff) {
+        speedTestSpeedWindow.shift();
+      }
+      const windowSpan = Number(data.time) - speedTestSpeedWindow[0].t;
+      const verifiedSpeed = windowSpan >= 0.45
+        ? speedTestSpeedWindow.reduce((sum, sample) => sum + sample.speed, 0) /
+          speedTestSpeedWindow.length
+        : 0;
+      if (verifiedSpeed > speedTestMaxMps) {
+        speedTestMaxMps = verifiedSpeed;
+        speedTestMaxDistance = runDistance;
+      }
+      speedTestMaxLateral = Math.max(speedTestMaxLateral, lateralDrift);
+      speedTestMaxHeading = Math.max(speedTestMaxHeading, headingError);
+      // Measure steering assistance only while the operator is actually
+      // asking the racer to drive. Idle time must not dilute this percentage.
+      if (cmd[0] > 0.05) {
+        speedTestSteeringIntegral += Math.abs(cmd[2]) * Math.max(0, Math.min(dtF, 0.1));
+        speedTestAutoSteeringIntegral += Math.abs(autoLineCommand) * Math.max(0, Math.min(dtF, 0.1));
+        speedTestElapsed += Math.max(0, Math.min(dtF, 0.1));
+      }
+      speedTestComplete = runDistance >= SPEED_TEST_DISTANCE_M;
+    }
     if (now - telemetryLastPush < 250) return;
     telemetryLastPush = now;
     setStore({
       telemetry: {
         fps: Math.round(fpsEma),
         ctrlHz: Math.round(ctrlHz),
-        speed: Math.hypot(data.qvel[0], data.qvel[1]),
+        speed,
+        maxSpeed: speedTestMaxMps,
+        maxSpeedDistance: speedTestMaxDistance,
         odo: odoM,
+        runDistance,
+        testDistance: SPEED_TEST_MODE ? SPEED_TEST_DISTANCE_M : 0,
+        testComplete: speedTestComplete,
+        lateralDrift,
+        maxLateralDrift: speedTestMaxLateral,
+        headingErrorDeg: headingError * 180 / Math.PI,
+        maxHeadingErrorDeg: speedTestMaxHeading * 180 / Math.PI,
+        steeringHelpPct: 100 * speedTestSteeringIntegral /
+          Math.max(1e-6, speedTestElapsed * RVEL_ANG),
+        autoLineHold: AUTO_LINE_HOLD,
+        autoSteeringPct: 100 * speedTestAutoSteeringIntegral /
+          Math.max(1e-6, speedTestElapsed * RVEL_ANG),
         peers: ghosts?.peerCount() ?? 0,
       },
     });
