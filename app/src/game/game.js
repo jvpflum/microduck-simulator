@@ -33,7 +33,8 @@ import {
   CROUCH_PERIOD_S, CROUCH_END_PHASE, PREVIEW_POLICY, PREVIEW_LOCO, PREVIEW_LABEL,
   SPEED_TEST_MODE, SPEED_TEST_DISTANCE_M, AUTO_LINE_HOLD,
   LINE_HOLD_YAW_KP, LINE_HOLD_LATERAL_KP, LINE_HOLD_YAW_KD, LINE_HOLD_MAX_WZ,
-  LINE_LAUNCH_BIAS_WZ,
+  LINE_LAUNCH_BIAS_WZ, LINE_LAUNCH_TAP_WZ, LINE_LAUNCH_TAP_START_S,
+  LINE_LAUNCH_TAP_DURATION_S, LINE_LAUNCH_TAP_COUNT, LINE_LAUNCH_TAP_GAP_S,
   CAPTURE_TOKEN,
   GROUND_PICK_PERIOD_S, GROUND_PICK_END_PHASE,
   BALL_RADIUS, BALL_PARK_POS, ARENA_HALF, SPAWN_X, SPAWN_Y,
@@ -389,6 +390,7 @@ async function boot({ scene, camera, renderer }) {
   const obs = new Float32Array(OBS_SIZE);
   const cmd = new Float32Array(CMD_SIZE); // [vx, vy, wz, head(4), body(6)]
   let autoLineCommand = 0;
+  let launchAssistStartTime = null;
   // Input controller: keyboard + gamepad + touch sources merged into one
   // continuous command + discrete action surface, in priority order.
   const kbSource = new KeyboardSource({ getVelocityLimits: () => velLims() });
@@ -554,6 +556,7 @@ async function boot({ scene, camera, renderer }) {
     mujoco.mj_forward(model, data);
     lastAction.fill(0);
     sitFlag = 0;
+    launchAssistStartTime = null;
     // Park the ball in physics immediately; if it was on screen, the
     // reverse scan peels it away at its last pose. A queued B-respawn is
     // cancelled: a reset means no ball.
@@ -667,6 +670,7 @@ async function boot({ scene, camera, renderer }) {
       autoLineCommand = 0;
       if (AUTO_LINE_HOLD && loco === "rollers" && c[0] > 0.05 &&
           speedTestStartYaw !== null && speedTestStartY !== null) {
+        if (launchAssistStartTime === null) launchAssistStartTime = Number(data.time);
         const yawError = wrapPi(trunkYaw() - speedTestStartYaw);
         const lateralError = data.qpos[1] - speedTestStartY;
         const yawRate = data.qvel[5];
@@ -679,9 +683,20 @@ async function boot({ scene, camera, renderer }) {
             - LINE_HOLD_LATERAL_KP * lateralError
             - LINE_HOLD_YAW_KD * yawRate,
         ));
+        const launchElapsed = Number(data.time) - launchAssistStartTime;
+        const tapElapsed = launchElapsed - LINE_LAUNCH_TAP_START_S;
+        const tapPeriod = LINE_LAUNCH_TAP_DURATION_S + LINE_LAUNCH_TAP_GAP_S;
+        const tapIndex = tapElapsed >= 0 ? Math.floor(tapElapsed / tapPeriod) : -1;
+        const tapPhase = tapIndex >= 0 ? tapElapsed - tapIndex * tapPeriod : 0;
+        const launchTap = tapIndex >= 0 && tapIndex < LINE_LAUNCH_TAP_COUNT &&
+          tapPhase < LINE_LAUNCH_TAP_DURATION_S ? LINE_LAUNCH_TAP_WZ : 0;
         // Manual steering remains available as a trim/override, while the
         // telemetry separately reports the automatic share.
-        cmd[2] = Math.max(-RVEL_ANG, Math.min(RVEL_ANG, c[2] + autoLineCommand));
+        cmd[2] = Math.max(
+          -RVEL_ANG,
+          Math.min(RVEL_ANG, c[2] + autoLineCommand + launchTap),
+        );
+        autoLineCommand = cmd[2] - c[2];
       }
     }
     // Head slots cmd[3..6]: EMA toward the stick targets at 50 Hz (this
@@ -1596,6 +1611,7 @@ async function boot({ scene, camera, renderer }) {
     speedTestStartX = data.qpos[0];
     speedTestStartY = data.qpos[1];
     speedTestStartYaw = trunkYaw();
+    launchAssistStartTime = null;
     speedTestMaxMps = 0;
     speedTestMaxDistance = 0;
     speedTestMaxLateral = 0;

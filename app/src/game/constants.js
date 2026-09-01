@@ -33,7 +33,15 @@ export const LINE_HOLD_MAX_WZ = previewNumber("line_max_wz", 0.18, 0.01, 0.30);
 // A fixed roller asymmetry can require a small corrective turn while the gait
 // first loads.  This deliberately fades over the first metres; it is surfaced
 // in the speed-test URL rather than pretending the raw policy is symmetric.
-export const LINE_LAUNCH_BIAS_WZ = previewNumber("line_launch_bias_wz", -0.06, -0.30, 0.30);
+export const LINE_LAUNCH_BIAS_WZ = previewNumber("line_launch_bias_wz", 0, -0.30, 0.30);
+// Optional policy-specific feed-forward launch assist. A non-zero profile
+// reproduces short steering taps discovered during operator testing; it is
+// disabled by default so baseline policies remain unchanged.
+export const LINE_LAUNCH_TAP_WZ = previewNumber("line_launch_tap_wz", 0, -0.30, 0.30);
+export const LINE_LAUNCH_TAP_START_S = previewNumber("line_launch_tap_start_s", 0.18, 0, 3);
+export const LINE_LAUNCH_TAP_DURATION_S = previewNumber("line_launch_tap_duration_s", 0.08, 0.02, 1);
+export const LINE_LAUNCH_TAP_COUNT = Math.floor(previewNumber("line_launch_tap_count", 0, 0, 10));
+export const LINE_LAUNCH_TAP_GAP_S = previewNumber("line_launch_tap_gap_s", 0.10, 0, 1);
 // Short-lived local dashboard credential used only when the operator
 // explicitly saves a state/action demonstration from the arena.
 export const CAPTURE_TOKEN = PREVIEW_PARAMS.get("capture_token") ||
